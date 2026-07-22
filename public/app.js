@@ -51,6 +51,24 @@ async function api(path, body) {
 }
 const act = (id, op, value) => api(`/api/sessions/${id}/action`, { op, value });
 
+function writeClipboard(text) {
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch { /* 忽略 */ }
+    ta.remove();
+  };
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(fallback);
+  else fallback();
+}
+async function readClipboard() {
+  try { return await navigator.clipboard.readText(); }
+  catch { toast('无法读取剪贴板', '浏览器未授权;请直接用 Ctrl+V 粘贴'); return ''; }
+}
+
 /* ---------- websocket: state stream ---------- */
 function connectEvents() {
   const ws = new WebSocket(`ws://${location.host}/ws/events`);
@@ -341,6 +359,29 @@ function renderWorkspace() {
   term.loadAddon(fit);
   term.open($('#term-host'));
   fit.fit();
+
+  // 剪贴板:选中即复制;Ctrl+C 有选区时复制(无选区仍发中断);Ctrl+Shift+C/V 显式复制粘贴
+  const copySelection = () => {
+    const sel = term.getSelection();
+    if (sel) writeClipboard(sel);
+    return !!sel;
+  };
+  term.onSelectionChange(() => { if (term.hasSelection()) writeClipboard(term.getSelection()); });
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true;
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.shiftKey && e.code === 'KeyC') { copySelection(); return false; }
+    if (mod && e.shiftKey && e.code === 'KeyV') {
+      readClipboard().then((t) => t && term.paste(t));
+      return false;
+    }
+    if (mod && !e.shiftKey && e.code === 'KeyC' && term.hasSelection()) {
+      copySelection();
+      term.clearSelection(); // 再按一次 Ctrl+C 才是发送中断
+      return false;
+    }
+    return true;
+  });
 
   let controller = false;
   termWs = new WebSocket(`ws://${location.host}/ws/term/${s.id}`);
