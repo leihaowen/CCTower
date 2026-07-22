@@ -208,6 +208,7 @@ function cardHTML(s) {
     </div>
     <pre class="mini-term" data-id="${s.id}">${esc(s.tailCache || (s.alive ? '(等待画面…)' : '(未在运行)'))}</pre>
     <div class="card-line">${esc(s.statusLine)}<span class="src">${s.brief ? SRC_LABEL[s.brief.source] : '系统观测'}</span></div>
+    ${s.status === 'review_ready' && s.worktree ? `<div class="card-review"><button class="review-btn">审阅改动</button></div>` : ''}
     ${d && d.question ? `<div class="card-decision">
       <div class="q">${esc(d.question)}</div>
       <div class="opts">${(d.options || []).map((o) =>
@@ -270,6 +271,12 @@ function wireCards(sel = '.card') {
   main.querySelectorAll('.mini-term').forEach((el) => { el.scrollTop = el.scrollHeight; });
   main.querySelectorAll(sel).forEach((el) => {
     el.addEventListener('click', (e) => {
+      const rb = e.target.closest('.review-btn');
+      if (rb) {
+        e.stopPropagation();
+        openDiff(el.dataset.id);
+        return;
+      }
       const btn = e.target.closest('.opt-btn');
       if (btn) {
         e.stopPropagation();
@@ -288,6 +295,114 @@ async function sendDecision(id, answer) {
   const question = s?.brief?.decision?.question || null;
   const r = await api(`/api/sessions/${id}/input`, { text: answer, record: { question } });
   toast(r.delivered ? '已发送回原会话' : '发送失败:session 未在运行', answer, () => openSession(id));
+}
+
+/* ---------- diff 审阅覆盖层 ---------- */
+let diffCtx = null; // { id, data }
+
+async function openDiff(id) {
+  popover.hidden = true;
+  try {
+    const data = await api(`/api/sessions/${id}/diff`);
+    diffCtx = { id, data };
+    renderDiffOverlay();
+  } catch (e) { toast('无法读取改动', e.message); }
+}
+function closeDiff() {
+  const el = $('#diff-overlay');
+  if (el) el.remove();
+  diffCtx = null;
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDiff(); });
+
+// 单文件着色:+/-/@@ 三色,其余 meta/上下文;全部转义
+function diffFileHTML(chunk, i) {
+  const lines = chunk.split('\n');
+  const m = lines[0].match(/^diff --git a\/.* b\/(.*)$/);
+  const fpath = m ? m[1] : lines[0];
+  const body = lines.map((l) => {
+    let c = 'ctx';
+    if (/^(diff --git|index |new file|deleted file|Binary files|similarity|rename |\+\+\+|---)/.test(l)) c = 'meta';
+    else if (l.startsWith('@@')) c = 'hunk';
+    else if (l.startsWith('+')) c = 'add';
+    else if (l.startsWith('-')) c = 'del';
+    return `<span class="dl-${c}">${esc(l)}</span>`;
+  }).join('\n');
+  const pre = `<pre class="diff-text">${body}</pre>`;
+  return `<section class="diff-file" id="dfile-${i}">
+    <div class="diff-file-head">${esc(fpath)}</div>
+    ${lines.length > 800 ? `<details><summary>${lines.length} 行改动,点击展开</summary>${pre}</details>` : pre}
+  </section>`;
+}
+
+function renderDiffOverlay() {
+  closeDiff();
+  const { id, data } = diffCtx || {};
+  const s = state.sessions.get(id);
+  if (!s || !data) return;
+  const totalAdd = data.files.reduce((n, f) => n + (f.add || 0), 0);
+  const totalDel = data.files.reduce((n, f) => n + (f.del || 0), 0);
+  const chunks = data.diff ? data.diff.split(/^(?=diff --git )/m).filter((c) => c.trim()) : [];
+  const el = document.createElement('div');
+  el.id = 'diff-overlay';
+  el.innerHTML = `
+    <div class="diff-head">
+      <b>${esc(s.name)}</b>
+      <span class="diff-branch">${esc(data.branch)} → ${esc(data.target)}</span>
+      <span class="diff-stat"><i class="add">+${totalAdd}</i> <i class="del">−${totalDel}</i> · ${data.files.length} 个文件</span>
+      ${data.behind ? `<span class="diff-warn">⚠ ${esc(data.target)} 已前进 ${data.behind} 条提交,可能有冲突</span>` : ''}
+      ${data.truncated ? '<span class="diff-warn">diff 过大已截断,完整内容请进终端查看</span>' : ''}
+      <span style="flex:1"></span>
+      <button class="btn-ghost" id="diff-refresh">刷新</button>
+      <button class="btn-primary" id="diff-merge">合并到 ${esc(data.target)}</button>
+      <button class="btn-ghost" id="diff-close">关闭</button>
+    </div>
+    <div id="diff-banner" hidden></div>
+    <div class="diff-body">
+      <nav class="diff-nav">${data.files.map((f, i) => `
+        <a data-i="${i}"><span class="p">${esc(f.path)}</span>
+          <span class="n">${f.add == null ? '二进制' : `+${f.add} −${f.del}`}</span></a>`).join('')}
+      </nav>
+      <div class="diff-main">${chunks.map(diffFileHTML).join('') || '<div class="empty"><strong>没有改动</strong></div>'}</div>
+    </div>`;
+  document.body.appendChild(el);
+  $('#diff-close', el).onclick = closeDiff;
+  $('#diff-refresh', el).onclick = () => openDiff(id);
+  el.querySelectorAll('.diff-nav a').forEach((a) => a.onclick = () => {
+    const t = $(`#dfile-${a.dataset.i}`, el);
+    if (t) t.scrollIntoView({ behavior: 'smooth' });
+  });
+  $('#diff-merge', el).onclick = async () => {
+    const btn = $('#diff-merge', el);
+    btn.disabled = true; btn.textContent = '合并中…';
+    try {
+      const r = await act(id, 'merge');
+      if (r.merged) {
+        toast(`已合并到 ${r.target}(${r.hash})`, '点击可归档该 session', () => act(id, 'archive'));
+        closeDiff();
+        return;
+      }
+      if (r.conflict) showConflict(id, r);
+    } catch (e) {
+      toast('合并失败', e.message);
+    }
+    btn.disabled = false; btn.textContent = `合并到 ${data.target}`;
+  };
+}
+
+function showConflict(id, r) {
+  const b = $('#diff-banner');
+  if (!b) return;
+  b.hidden = false;
+  b.innerHTML = `<b>合并有冲突,${esc(r.target)} 未被改动。</b>冲突文件:${r.files.map(esc).join('、')}
+    <button class="btn-ghost" id="diff-resolve">让 Claude 解决冲突</button>`;
+  $('#diff-resolve').onclick = async () => {
+    try {
+      await act(id, 'resolve-conflict', { target: r.target, files: r.files });
+      toast('已发送指令', 'Claude 将在其 worktree 中解决冲突,完成后可重新合并');
+      closeDiff();
+    } catch (e) { toast('发送失败', e.message); }
+  };
 }
 
 /* ---------- workspace ---------- */
@@ -356,6 +471,7 @@ function renderWorkspace() {
       <span class="status-pill" id="ws-pill" style="--pc:${st.color}"><span class="dot"></span>${st.label}</span>
       <span class="ws-meta" id="ws-meta"></span>
       <div class="ws-actions">
+        ${s.worktree ? '<button class="btn-ghost" id="ws-review">审阅改动</button>' : ''}
         <button class="btn-ghost" id="ws-refresh">刷新摘要</button>
         <button class="btn-ghost" id="ws-flag">摘要不准确</button>
         <button class="btn-ghost" id="ws-restart">重启</button>
@@ -376,6 +492,7 @@ function renderWorkspace() {
 
   $('#ws-back').onclick = () => closeWorkspace('inbox');
   $('#ws-name').onchange = (e) => act(s.id, 'rename', e.target.value);
+  if (s.worktree) $('#ws-review').onclick = () => openDiff(s.id);
   $('#ws-refresh').onclick = () => act(s.id, 'refresh-brief');
   $('#ws-flag').onclick = () => { act(s.id, 'flag-brief'); toast('已记录', '摘要被标记为不准确'); };
   $('#ws-restart').onclick = () => act(s.id, 'restart').then(() => toast('已重启', s.name, null, 2500)).catch((e) => toast('重启失败', e.message));
