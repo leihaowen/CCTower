@@ -129,6 +129,18 @@ test('squashMerge:projectDir detached HEAD 报错', () => {
   assert.throws(() => squashMerge({ ...fx, message: 'm' }), /detached HEAD/);
 });
 
+test('computeDiff:含空格与中文名的未跟踪文件完整出现在 diff', () => {
+  const fx = makeFixture();
+  write(fx.worktree, 'has space.txt', 'secret1\n');
+  write(fx.worktree, '设计文档.md', 'secret2\n');
+  const d = computeDiff(fx);
+  assert.ok(d.diff.includes('+secret1'));
+  assert.ok(d.diff.includes('+secret2'));
+  const paths = d.files.map((f) => f.path);
+  assert.ok(paths.includes('has space.txt'));
+  assert.ok(paths.includes('设计文档.md'));
+});
+
 test('安全:以 - 开头的分支名被拒绝,不会进入 git argv', () => {
   const fx = makeFixture();
   run(['symbolic-ref', 'HEAD', 'refs/heads/-evil'], fx.projectDir);

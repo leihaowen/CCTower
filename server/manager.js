@@ -430,7 +430,7 @@ class SessionManager {
         this._event(s, 'lifecycle', `已 squash 合并到 ${r.target}(${r.hash})`, '用户操作');
         s.decisions.push({ at: new Date().toISOString(), question: `合并到 ${r.target}?`, answer: `已合并(${r.hash})`, delivered: true });
       } else {
-        this._event(s, 'warning', `合并被冲突预检拦下:${r.files.join('、')};${r.target} 未被改动`);
+        this._event(s, 'warning', `合并被冲突预检拦下:${r.files.join('、')};${r.target} 未被改动`, '用户操作');
       }
       this._touch(s);
       return r;

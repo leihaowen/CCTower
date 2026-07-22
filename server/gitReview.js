@@ -52,15 +52,23 @@ function computeDiff({ projectDir, worktree, branch }) {
   let diff = git(['diff', base], worktree);
 
   // 未跟踪的新文件:逐个以 --no-index 拼入,不动 worktree 的 index
-  const untracked = git(['status', '--porcelain', '-uall'], worktree).split('\n')
-    .filter((l) => l.startsWith('?? ')).map((l) => l.slice(3).trim());
+  // 用 ls-files -z 枚举,路径不经 C 引号转义(空格/中文名安全)
+  const untracked = git(['ls-files', '--others', '--exclude-standard', '-z'], worktree)
+    .split('\0').filter(Boolean);
   for (const f of untracked) {
     const r = gitLoose(['diff', '--no-index', '--', '/dev/null', f], worktree);
-    if (r.status > 1) continue; // 意外错误(如文件消失),跳过该文件
-    diff += r.stdout;
-    const binary = /^Binary files /m.test(r.stdout);
-    const add = binary ? null : (r.stdout.match(/^\+(?!\+\+)/gm) || []).length;
-    files.push({ path: f, add, del: binary ? null : 0 });
+    if (r.status === 1 && r.stdout) {
+      diff += r.stdout;
+      const binary = /^Binary files /m.test(r.stdout);
+      const add = binary ? null : (r.stdout.match(/^\+(?!\+\+)/gm) || []).length;
+      files.push({ path: f, add, del: binary ? null : 0 });
+    } else if (r.status === 0) {
+      files.push({ path: f, add: 0, del: 0 }); // 空文件,无内容可展示
+    } else {
+      // 拿不到内容也必须让用户看见,绝不能静默吞掉
+      files.push({ path: f, add: null, del: null });
+      diff += `diff --git a/${f} b/${f}\n(无法展示该未跟踪文件的内容,合并前请自行检查)\n`;
+    }
   }
 
   let truncated = false;
@@ -103,7 +111,7 @@ function squashMerge({ projectDir, worktree, branch, message }) {
     git(['commit', '-m', message], projectDir);
   } catch (e) {
     try { git(['reset', '--merge'], projectDir); } catch { /* best effort */ }
-    throw new Error('合并执行失败,项目目录已恢复:' + String(e.message).split('\n')[0]);
+    throw new Error('合并执行失败,项目目录已恢复:' + String(e.stderr || e.message).trim().split('\n')[0]);
   }
   return { merged: true, target, hash: git(['rev-parse', '--short', 'HEAD'], projectDir).trim() };
 }
