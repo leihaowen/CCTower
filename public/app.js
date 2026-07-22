@@ -51,19 +51,6 @@ async function api(path, body) {
 }
 const act = (id, op, value) => api(`/api/sessions/${id}/action`, { op, value });
 
-function writeClipboard(text) {
-  const fallback = () => {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.cssText = 'position:fixed;opacity:0';
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand('copy'); } catch { /* 忽略 */ }
-    ta.remove();
-  };
-  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(fallback);
-  else fallback();
-}
 async function readClipboard() {
   try { return await navigator.clipboard.readText(); }
   catch { toast('无法读取剪贴板', '浏览器未授权;请直接用 Ctrl+V 粘贴'); return ''; }
@@ -98,13 +85,13 @@ function notify(m) {
     n.onclick = () => { window.focus(); openSession(m.id); };
   }
 }
-function toast(title, body, onClick) {
+function toast(title, body, onClick, ttl = 8000) {
   const el = document.createElement('div');
   el.className = 'toast';
   el.innerHTML = `<b>${esc(title)}</b><span>${esc(body || '')}</span>`;
   el.onclick = () => { el.remove(); onClick && onClick(); };
   $('#toasts').appendChild(el);
-  setTimeout(() => el.remove(), 8000);
+  setTimeout(() => el.remove(), ttl);
 }
 
 /* ---------- brief html ---------- */
@@ -360,24 +347,30 @@ function renderWorkspace() {
   term.open($('#term-host'));
   fit.fit();
 
-  // 剪贴板:选中即复制;Ctrl+C 有选区时复制(无选区仍发中断);Ctrl+Shift+C/V 显式复制粘贴
-  const copySelection = () => {
-    const sel = term.getSelection();
-    if (sel) writeClipboard(sel);
-    return !!sel;
+  // 剪贴板:同步 document.execCommand('copy') 会触发 xterm 内建的 copy 事件处理,
+  // 由它把终端选区写入剪贴板 —— 不依赖 navigator.clipboard 的权限授予。
+  const doCopy = () => {
+    if (!term.hasSelection()) return false;
+    const text = term.getSelection();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { /* 走补充路径 */ }
+    if (!ok && navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => { });
+    toast('已复制', text.length > 60 ? text.slice(0, 60) + '…' : text, null, 1600);
+    return true;
   };
-  term.onSelectionChange(() => { if (term.hasSelection()) writeClipboard(term.getSelection()); });
+  // 选中即复制(松开鼠标后触发,避开拖选过程中的中间状态)
+  $('#term-host').addEventListener('mouseup', () => setTimeout(() => { if (term.hasSelection()) doCopy(); }, 0));
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.shiftKey && e.code === 'KeyC') { copySelection(); return false; }
-    if (mod && e.shiftKey && e.code === 'KeyV') {
-      readClipboard().then((t) => t && term.paste(t));
+    if (mod && e.shiftKey && e.code === 'KeyC') { doCopy(); return false; }
+    if (mod && !e.shiftKey && e.code === 'KeyC' && term.hasSelection()) {
+      doCopy();
+      term.clearSelection(); // Ctrl+C:先复制,再按才是发中断;Cmd+C 只复制
       return false;
     }
-    if (mod && !e.shiftKey && e.code === 'KeyC' && term.hasSelection()) {
-      copySelection();
-      term.clearSelection(); // 再按一次 Ctrl+C 才是发送中断
+    if (e.ctrlKey && e.shiftKey && e.code === 'KeyV') {
+      readClipboard().then((t) => t && term.paste(t)); // Cmd+V/Ctrl+V 由 xterm 原生 paste 事件处理
       return false;
     }
     return true;
