@@ -435,6 +435,24 @@ class SessionManager {
     this._touch(s);
   }
 
+  // 网页端批准/拒绝权限:向 TUI 权限对话框发送按键(1=允许第一项,Esc=拒绝)
+  permissionAction(id, approve) {
+    const s = this.sessions.get(id);
+    const rt = this.runtime.get(id);
+    if (!s || !rt || !s.alive || s.type !== 'claude') return false;
+    const question = s.statusLine;
+    try { rt.pty.write(approve ? '1' : '\x1b'); } catch { return false; }
+    s.decisions.push({
+      at: new Date().toISOString(), kind: 'permission',
+      question, answer: approve ? '批准' : '拒绝', delivered: true,
+    });
+    s.lastSemanticAt = new Date().toISOString();
+    s.lastNotified = null;
+    this._event(s, 'input', approve ? '用户从网页批准权限请求' : '用户从网页拒绝权限请求', '用户操作');
+    this._setStatus(s, 'executing', approve ? '权限已批准,继续执行' : '权限已拒绝,等待 Claude 调整方案', '用户操作');
+    return true;
+  }
+
   // ---------- claude signals ----------
 
   applyHook(id, event, payload) {

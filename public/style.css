@@ -162,6 +162,10 @@ nav { display: flex; flex-direction: column; gap: 4px; }
   background: var(--bg); font-size: 13px;
 }
 .opt-btn:hover { border-color: var(--amber); color: var(--amber); }
+.perm-btn { border-color: color-mix(in srgb, var(--c-review_ready) 50%, transparent); color: var(--c-review_ready); }
+.perm-btn.deny { border-color: color-mix(in srgb, var(--c-needs_permission) 50%, transparent); color: var(--c-needs_permission); }
+.perm-btn:hover { filter: brightness(1.2); }
+.decision-box.perm { border-color: color-mix(in srgb, var(--c-needs_permission) 45%, transparent); background: color-mix(in srgb, var(--c-needs_permission) 6%, transparent); }
 .opt-btn.rec { border-color: color-mix(in srgb, var(--amber) 60%, transparent); }
 .opt-btn.rec::after { content: " ★推荐"; color: var(--amber); font-size: 11px; }
 

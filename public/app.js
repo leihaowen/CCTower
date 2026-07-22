@@ -214,6 +214,12 @@ function cardHTML(s) {
       <div class="opts">${(d.options || []).map((o) =>
         `<button class="opt-btn ${o === d.recommended ? 'rec' : ''}" data-answer="${esc(o)}">${esc(o)}</button>`).join('')}</div>
     </div>` : ''}
+    ${s.status === 'needs_permission' && s.alive ? `<div class="card-decision">
+      <div class="opts">
+        <button class="opt-btn perm-btn" data-perm="allow" title="向权限对话框发送选项 1(允许)">✓ 批准</button>
+        <button class="opt-btn perm-btn deny" data-perm="deny" title="向权限对话框发送 Esc(拒绝)">✗ 拒绝</button>
+      </div>
+    </div>` : ''}
   </div>`;
 }
 
@@ -280,7 +286,8 @@ function wireCards(sel = '.card') {
       const btn = e.target.closest('.opt-btn');
       if (btn) {
         e.stopPropagation();
-        sendDecision(el.dataset.id, btn.dataset.answer);
+        if (btn.dataset.perm) sendPermission(el.dataset.id, btn.dataset.perm === 'allow');
+        else sendDecision(el.dataset.id, btn.dataset.answer);
         return;
       }
       openSession(el.dataset.id);
@@ -288,6 +295,11 @@ function wireCards(sel = '.card') {
     el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openSession(el.dataset.id); });
     bindHover(el, el.dataset.id);
   });
+}
+
+async function sendPermission(id, approve) {
+  const r = await act(id, approve ? 'approve-permission' : 'deny-permission').catch((e) => ({ error: e.message }));
+  toast(r && r.error ? '操作失败:' + r.error : (approve ? '已批准' : '已拒绝'), '', null, 2500);
 }
 
 async function sendDecision(id, answer) {
@@ -603,6 +615,13 @@ function updatePanels(s) {
       ${d.reason ? `<div class="why">推荐 ${esc(d.recommended || '')}:${esc(d.reason)}</div>` : ''}
       <div class="opts">${(d.options || []).map((o) => `<button class="opt-btn ${o === d.recommended ? 'rec' : ''}" data-answer="${esc(o)}">${esc(o)}</button>`).join('')}</div>
     </div>` : ''}
+    ${s.status === 'needs_permission' && s.alive ? `<div class="decision-box perm">
+      <div class="q">${esc(s.statusLine)}</div>
+      <div class="opts">
+        <button class="opt-btn perm-btn" data-perm="allow" title="向权限对话框发送选项 1(允许)">✓ 批准</button>
+        <button class="opt-btn perm-btn deny" data-perm="deny" title="向权限对话框发送 Esc(拒绝)">✗ 拒绝</button>
+      </div>
+    </div>` : ''}
     <div class="reply"><input id="ws-reply" placeholder="${s.type === 'claude' ? '回复 Claude(回车发送到原会话)' : '向终端发送一行命令'}"><button class="btn-ghost" id="ws-send">发送</button></div>
     <div style="height:16px"></div>
     <h4>Session</h4>
@@ -618,7 +637,9 @@ function updatePanels(s) {
     <h4>手工备注</h4>
     <div class="note-box"><textarea id="ws-note" rows="2" placeholder="给这个 session 写一句备注">${esc(s.note)}</textarea></div>`;
 
-  $('#ws-left').querySelectorAll('.opt-btn').forEach((b) => b.onclick = () => sendDecision(s.id, b.dataset.answer));
+  $('#ws-left').querySelectorAll('.opt-btn').forEach((b) => {
+    b.onclick = () => (b.dataset.perm ? sendPermission(s.id, b.dataset.perm === 'allow') : sendDecision(s.id, b.dataset.answer));
+  });
   const reply = $('#ws-reply'), send = () => {
     if (!reply.value.trim()) return;
     api(`/api/sessions/${s.id}/input`, { text: reply.value.trim(), record: d ? { question: d.question } : null })
