@@ -7,6 +7,7 @@ const { execFileSync } = require('child_process');
 const pty = require('node-pty');
 const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 const { writeHookSettings, protocolPrompt } = require('./claudeSetup');
+const { computeDiff, squashMerge } = require('./gitReview');
 
 const ATTENTION = new Set(['needs_decision', 'needs_permission', 'blocked', 'review_ready']);
 const BUFFER_CAP = 200_000;
@@ -20,6 +21,7 @@ class SessionManager {
     this.onNotify = onNotify; // (session, reason) => void, push notification
     this.sessions = new Map(); // id -> session (persisted shape)
     this.runtime = new Map(); // id -> { pty, buffer, clients:Set<ws>, controller:ws|null }
+    this._merging = new Set(); // projectDir 级合并互斥
     fs.mkdirSync(path.join(dataDir, 'worktrees'), { recursive: true });
     fs.mkdirSync(path.join(dataDir, 'hooks'), { recursive: true });
     this.stateFile = path.join(dataDir, 'sessions.json');
@@ -438,6 +440,55 @@ class SessionManager {
     s.note = String(note || '').slice(0, 500);
     this._event(s, 'note', '用户更新手工备注', '用户操作');
     this._touch(s);
+  }
+
+  // ---------- diff 审阅与合并 ----------
+
+  _reviewable(id) {
+    const s = this.sessions.get(id);
+    if (!s) throw new Error('session 不存在');
+    if (!s.worktree) throw new Error('该 session 没有独立 worktree,无法审阅/合并');
+    if (!fs.existsSync(s.worktree)) throw new Error('worktree 目录已不存在');
+    return s;
+  }
+
+  diff(id) {
+    const s = this._reviewable(id);
+    return computeDiff({ projectDir: s.projectDir, worktree: s.worktree, branch: s.branch });
+  }
+
+  merge(id) {
+    const s = this._reviewable(id);
+    if (this._merging.has(s.projectDir)) throw new Error('该项目另一个合并正在进行,请稍后再试');
+    this._merging.add(s.projectDir);
+    try {
+      const objective = (s.brief && s.brief.objective) || s.command || '(无任务说明)';
+      const message = `ccw: ${s.name}\n\n任务:${objective}\nsession:${s.id}\n来源分支:${s.branch}`;
+      const r = squashMerge({ projectDir: s.projectDir, worktree: s.worktree, branch: s.branch, message });
+      if (r.merged) {
+        this._event(s, 'lifecycle', `已 squash 合并到 ${r.target}(${r.hash})`, '用户操作');
+        s.decisions.push({ at: new Date().toISOString(), question: `合并到 ${r.target}?`, answer: `已合并(${r.hash})`, delivered: true });
+      } else {
+        this._event(s, 'warning', `合并被冲突预检拦下:${r.files.join('、')};${r.target} 未被改动`, '用户操作');
+      }
+      this._touch(s);
+      return r;
+    } catch (e) {
+      this._event(s, 'warning', `合并失败:${e.message}`);
+      this._touch(s);
+      throw e;
+    } finally {
+      this._merging.delete(s.projectDir);
+    }
+  }
+
+  resolveConflict(id, { target, files } = {}) {
+    this._reviewable(id);
+    const list = Array.isArray(files) && files.length ? files.join('、') : '(见 git 输出)';
+    const text = `请在当前 worktree 中执行 git merge ${target || '主分支'},解决以下文件的冲突并在验证通过后 commit,完成后上报 review:${list}`;
+    const ok = this.sendInput(id, text, { record: { question: '合并有冲突,需要在 worktree 内解决' } });
+    if (!ok) throw new Error('session 未在运行,无法发送解决冲突指令');
+    return { delivered: true };
   }
 
   // ---------- lifecycle actions ----------
