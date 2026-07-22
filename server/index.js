@@ -15,6 +15,21 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
+// 防御浏览器驱动的 CSRF / DNS rebinding:只接受本机 Host,且 Origin(若有)必须同源。
+// 本机 curl(hooks/report)不带 Origin,不受影响。
+const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+function isLocalRequest(headers) {
+  if (!ALLOWED_HOSTS.has(headers.host)) return false;
+  if (headers.origin) {
+    try { return ALLOWED_HOSTS.has(new URL(headers.origin).host); } catch { return false; }
+  }
+  return true;
+}
+app.use('/api', (req, res, next) => {
+  if (!isLocalRequest(req.headers)) return res.status(403).json({ error: 'forbidden' });
+  next();
+});
+
 // ---------- websocket fan-out ----------
 const eventClients = new Set();
 function broadcast(obj) {
@@ -100,6 +115,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (req, socket, head) => {
+  if (!isLocalRequest(req.headers)) { socket.destroy(); return; }
   const url = new URL(req.url, BASE);
   if (url.pathname === '/ws/events') {
     wss.handleUpgrade(req, socket, head, (ws) => {

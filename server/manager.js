@@ -142,7 +142,12 @@ class SessionManager {
 
   _spawn(s) {
     let file, args;
-    const env = { ...process.env, CCW_SESSION_ID: s.id, CCW_BASE_URL: this.baseUrl };
+    // 剔除继承自启动环境的 Claude Code 标记,避免 session 内的 claude 被当作嵌套子会话(否则不保存 transcript)
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([k]) => !/^(CLAUDECODE$|CLAUDE_CODE_)/.test(k))
+    );
+    env.CCW_SESSION_ID = s.id;
+    env.CCW_BASE_URL = this.baseUrl;
     if (s.type === 'claude') {
       const hooksFile = writeHookSettings(path.join(this.dataDir, 'hooks'), this.baseUrl, s.id);
       file = 'claude';
