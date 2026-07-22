@@ -38,7 +38,9 @@ class SessionManager {
           s.alive = false;
           if (!['completed', 'exited'].includes(s.status)) {
             s.status = 'exited';
-            s.statusLine = '服务重启,原进程已结束;可点击「重启」继续';
+            s.statusLine = s.type === 'claude' && s.claudeSessionId
+              ? '服务重启,原进程已结束;点「重启」将恢复原对话上下文'
+              : '服务重启,原进程已结束;可点击「重启」继续';
           }
         }
         this.sessions.set(s.id, s);
@@ -102,6 +104,7 @@ class SessionManager {
       cwd: projectDir,
       command: command || '',
       isolate: type === 'claude' ? isolate !== false : false,
+      claudeSessionId: null, // Claude Code 内部会话 id,来自 hook payload;重启时用于 --resume
       worktree: null,
       branch: null,
       createdAt: new Date().toISOString(),
@@ -161,7 +164,13 @@ class SessionManager {
       const hooksFile = writeHookSettings(path.join(this.dataDir, 'hooks'), this.baseUrl, s.id);
       file = 'claude';
       args = ['--settings', hooksFile, '--append-system-prompt', protocolPrompt(this.baseUrl, s.id)];
-      if (s.command) args.push(s.command);
+      if (s.claudeSessionId) {
+        // 重启走 resume:恢复原对话上下文,初始命令已在原对话里,不重发
+        args.push('--resume', s.claudeSessionId);
+        this._event(s, 'lifecycle', `以 --resume 恢复原 Claude 对话(${s.claudeSessionId.slice(0, 8)}…)`);
+      } else if (s.command) {
+        args.push(s.command);
+      }
     } else {
       file = process.env.SHELL || 'bash';
       args = [];
@@ -316,6 +325,10 @@ class SessionManager {
     const s = this.sessions.get(id);
     if (!s || s.type !== 'claude') return;
     const msg = (payload && (payload.message || payload.title)) || '';
+    // hook payload 自带 Claude 内部 session_id;resume 后会换新 id,始终跟随最新值
+    if (payload && payload.session_id && s.claudeSessionId !== payload.session_id) {
+      s.claudeSessionId = payload.session_id;
+    }
     s.lastSemanticAt = new Date().toISOString();
     this._event(s, 'hook', `${event}${msg ? ':' + msg : ''}`);
     switch (event) {
