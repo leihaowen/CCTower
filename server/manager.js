@@ -14,9 +14,10 @@ const BUFFER_CAP = 200_000;
 const STALE_MS = 10 * 60 * 1000;
 
 class SessionManager {
-  constructor({ dataDir, baseUrl, onChange, onNotify }) {
+  constructor({ dataDir, baseUrl, onChange, onNotify, backend }) {
     this.dataDir = dataDir;
     this.baseUrl = baseUrl;
+    this.backend = backend || process.env.CCW_BACKEND || 'auto'; // 'auto'(优先 tmux)| 'pty'
     this.onChange = onChange; // (session) => void, broadcast state
     this.onNotify = onNotify; // (session, reason) => void, push notification
     this.sessions = new Map(); // id -> session (persisted shape)
@@ -33,17 +34,23 @@ class SessionManager {
     try {
       const arr = JSON.parse(fs.readFileSync(this.stateFile, 'utf8'));
       for (const s of arr) {
-        // The server process owns the PTYs; after a restart they are gone.
-        if (s.alive) {
-          s.alive = false;
-          if (!['completed', 'exited'].includes(s.status)) {
-            s.status = 'exited';
-            s.statusLine = s.type === 'claude' && s.claudeSessionId
-              ? '服务重启,原进程已结束;点「重启」将恢复原对话上下文'
-              : '服务重启,原进程已结束;可点击「重启」继续';
-          }
-        }
         this.sessions.set(s.id, s);
+        if (!s.alive) continue;
+        // tmux 托管的会话在服务重启后仍在运行:重新接管而不是宣告死亡
+        if (s.backend === 'tmux' && this._tmuxHas(s.id)) {
+          try {
+            this._wire(s, this._attachTmux(s));
+            this._event(s, 'lifecycle', '服务重启,已重新接管仍在运行的会话(tmux)');
+            continue;
+          } catch { /* 接管失败按退出处理 */ }
+        }
+        s.alive = false;
+        if (!['completed', 'exited'].includes(s.status)) {
+          s.status = 'exited';
+          s.statusLine = s.type === 'claude' && s.claudeSessionId
+            ? '服务重启,原进程已结束;点「重启」将恢复原对话上下文'
+            : '服务重启,原进程已结束;可点击「重启」继续';
+        }
       }
     } catch { /* first boot */ }
   }
@@ -152,38 +159,127 @@ class SessionManager {
     }
   }
 
-  _spawn(s) {
-    let file, args;
+  // ---------- 进程托管:tmux(默认,服务重启不丢会话)/ 直接 PTY(降级) ----------
+
+  _cleanEnv() {
     // 剔除继承自启动环境的 Claude Code 标记,避免 session 内的 claude 被当作嵌套子会话(否则不保存 transcript)
-    const env = Object.fromEntries(
+    return Object.fromEntries(
       Object.entries(process.env).filter(([k]) => !/^(CLAUDECODE$|CLAUDE_CODE_)/.test(k))
     );
-    env.CCW_SESSION_ID = s.id;
-    env.CCW_BASE_URL = this.baseUrl;
+  }
+
+  _tmux(args) {
+    // 专用 socket + 空配置,与用户自己的 tmux 完全隔离
+    return execFileSync('tmux', ['-L', 'ccw', '-f', '/dev/null', ...args], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
+
+  _tmuxHas(id) {
+    try { this._tmux(['has-session', '-t', `=ccw_${id}`]); return true; } catch { return false; }
+  }
+
+  _tmuxReady() {
+    if (this.backend === 'pty') return false;
+    if (this._tmuxOk !== undefined) return this._tmuxOk;
+    try {
+      execFileSync('tmux', ['-V'], { stdio: 'ignore' });
+      this._tmuxOk = true;
+    } catch {
+      this._tmuxOk = false;
+    }
+    return this._tmuxOk;
+  }
+
+  // 全局参数在 new-session 之后应用:无会话时 tmux server 会自动退出(exit-empty),
+  // 提前 start-server 再配置是竞态;每次应用,幂等且极廉价
+  _applyTmuxGlobals() {
+    const opts = [
+      ['status', 'off'], ['history-limit', '8000'],
+      ['set-titles', 'on'], ['set-titles-string', '#{pane_title}'],
+      ['default-terminal', 'tmux-256color'], ['window-size', 'latest'],
+      ['allow-passthrough', 'on'],
+    ];
+    try {
+      for (const [k, v] of opts) this._tmux(['set-option', '-g', k, v]);
+      this._tmux(['set-option', '-sg', 'escape-time', '0']);
+    } catch { /* 配置失败不阻断会话 */ }
+  }
+
+  _buildCommand(s) {
     if (s.type === 'claude') {
       const hooksFile = writeHookSettings(path.join(this.dataDir, 'hooks'), this.baseUrl, s.id);
-      file = 'claude';
-      args = ['--settings', hooksFile, '--append-system-prompt', protocolPrompt(this.baseUrl, s.id)];
+      const argv = ['claude', '--settings', hooksFile, '--append-system-prompt', protocolPrompt(this.baseUrl, s.id)];
       if (s.claudeSessionId) {
         // 重启走 resume:恢复原对话上下文,初始命令已在原对话里,不重发
-        args.push('--resume', s.claudeSessionId);
+        argv.push('--resume', s.claudeSessionId);
         this._event(s, 'lifecycle', `以 --resume 恢复原 Claude 对话(${s.claudeSessionId.slice(0, 8)}…)`);
       } else if (s.command) {
-        args.push(s.command);
+        argv.push(s.command);
       }
-    } else {
-      file = process.env.SHELL || 'bash';
-      args = [];
+      return argv;
     }
-    const p = pty.spawn(file, args, {
-      name: 'xterm-256color', cols: 120, rows: 32, cwd: s.cwd, env,
+    return [process.env.SHELL || 'bash'];
+  }
+
+  _attachTmux(s) {
+    return pty.spawn('tmux', ['-L', 'ccw', '-f', '/dev/null', 'attach-session', '-t', `=ccw_${s.id}`], {
+      name: 'xterm-256color', cols: 120, rows: 32,
+      cwd: fs.existsSync(s.cwd) ? s.cwd : process.cwd(),
+      env: this._cleanEnv(),
     });
+  }
+
+  _exitFile(id) { return path.join(this.dataDir, 'hooks', `exit-${id}`); }
+
+  _spawn(s) {
+    const argv = this._buildCommand(s);
+    let p;
+    if (this._tmuxReady()) {
+      s.backend = 'tmux';
+      const q = (a) => `'` + String(a).replace(/'/g, `'\\''`) + `'`;
+      const launch = path.join(this.dataDir, 'hooks', `launch-${s.id}.sh`);
+      fs.writeFileSync(launch, [
+        '#!/usr/bin/env bash',
+        // tmux server 继承了 CCTower 的环境,这里再剔除一次 Claude 标记
+        `unset $(compgen -v | grep -E '^CLAUDECODE$|^CLAUDE_CODE_') 2>/dev/null || true`,
+        `export CCW_SESSION_ID=${q(s.id)} CCW_BASE_URL=${q(this.baseUrl)}`,
+        `cd ${q(s.cwd)} || exit 97`,
+        `rm -f ${q(this._exitFile(s.id))}`,
+        argv.map(q).join(' '),
+        'ec=$?',
+        // attach 客户端拿不到程序退出码,落盘供 onExit 读取
+        `echo "$ec" > ${q(this._exitFile(s.id))}`,
+        'exit "$ec"',
+      ].join('\n'));
+      try { this._tmux(['kill-session', '-t', `=ccw_${s.id}`]); } catch { /* 无残留 */ }
+      this._tmux(['new-session', '-d', '-s', `ccw_${s.id}`, '-x', '120', '-y', '32', 'bash', launch]);
+      this._applyTmuxGlobals();
+      p = this._attachTmux(s);
+    } else {
+      s.backend = 'pty';
+      const env = this._cleanEnv();
+      env.CCW_SESSION_ID = s.id;
+      env.CCW_BASE_URL = this.baseUrl;
+      p = pty.spawn(argv[0], argv.slice(1), { name: 'xterm-256color', cols: 120, rows: 32, cwd: s.cwd, env });
+    }
+    this._wire(s, p);
+    if (s.type === 'terminal' && s.command) {
+      setTimeout(() => { try { p.write(s.command + '\r'); } catch { } }, 300);
+    }
+  }
+
+  // 挂接一个 PTY(新建或重新接管)到 session:屏幕状态、事件、退出处理
+  _wire(s, p, { keepClients } = {}) {
     // headless xterm 维护真实屏幕状态,供列表页迷你终端展示;列数必须与 PTY 一致,否则光标定位错乱
     const head = new HeadlessTerminal({ cols: 120, rows: 32, scrollback: 400, allowProposedApi: true });
-    const rt = { pty: p, head, buffer: '', clients: new Set(), controller: null, expectExit: false, booted: false, lastTail: '' };
+    const rt = {
+      pty: p, head, buffer: '', clients: keepClients || new Set(),
+      controller: null, expectExit: false, booted: false, lastTail: '',
+    };
+    for (const ws of rt.clients) { if (!rt.controller && ws.readyState === 1) rt.controller = ws; }
     this.runtime.set(s.id, rt);
-    // Claude Code 通过 OSC 0/2 持续上报会话主题(zellij 等复用器的标签名同源);
-    // headless xterm 负责解析,含跨 chunk 拼接
+    // Claude Code 通过 OSC 0/2 持续上报会话主题(zellij 等复用器的标签名同源)
     head.onTitleChange((title) => this._onTitle(s, title));
     s.alive = true;
     s.exitCode = null;
@@ -210,26 +306,46 @@ class SessionManager {
     });
 
     p.onExit(({ exitCode }) => {
+      // tmux 会话仍在而 attach 客户端意外断开:自动重新接管,不算退出
+      if (s.backend === 'tmux' && !rt.expectExit && this.sessions.has(s.id) && this._tmuxHas(s.id)) {
+        try {
+          this._wire(s, this._attachTmux(s), { keepClients: rt.clients });
+          this._event(s, 'lifecycle', 'attach 客户端断开,已自动重新接管 tmux 会话');
+          this._touch(s);
+          return;
+        } catch { /* 接管失败按退出处理 */ }
+      }
+      let code = exitCode;
+      if (s.backend === 'tmux') {
+        // attach 客户端退出码不是程序退出码,读 launcher 落盘的真实值
+        try { code = parseInt(fs.readFileSync(this._exitFile(s.id), 'utf8').trim(), 10); } catch { /* 保留 attach 码 */ }
+        if (Number.isNaN(code)) code = exitCode;
+      }
       s.alive = false;
-      s.exitCode = exitCode;
+      s.exitCode = code;
       for (const ws of rt.clients) {
-        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'exit', code: exitCode }));
+        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'exit', code }));
       }
       if (!this.sessions.has(s.id)) return; // session 已删除,不再广播状态
-      this._event(s, 'lifecycle', `进程退出,exit code ${exitCode}`);
+      this._event(s, 'lifecycle', `进程退出,exit code ${code}`);
       if (rt.expectExit) {
         this._setStatus(s, 'exited', '已被用户停止');
       } else if (s.type === 'claude') {
-        if (exitCode === 0) this._setStatus(s, 'completed', 'Claude 会话已结束');
-        else this._setStatus(s, 'blocked', `Claude 进程异常退出(code ${exitCode})`);
+        if (code === 0) this._setStatus(s, 'completed', 'Claude 会话已结束');
+        else this._setStatus(s, 'blocked', `Claude 进程异常退出(code ${code})`);
       } else {
-        this._setStatus(s, 'exited', `进程已退出(code ${exitCode})`);
+        this._setStatus(s, 'exited', `进程已退出(code ${code})`);
       }
     });
+  }
 
-    if (s.type === 'terminal' && s.command) {
-      setTimeout(() => { try { p.write(s.command + '\r'); } catch { } }, 300);
+  // 结束底层进程:tmux 托管杀 tmux 会话,直接 PTY 杀进程
+  _killProc(s, rt) {
+    rt.expectExit = true;
+    if (s.backend === 'tmux') {
+      try { this._tmux(['kill-session', '-t', `=ccw_${s.id}`]); return; } catch { /* 退回 pty kill */ }
     }
+    try { rt.pty.kill(); } catch { /* 已死 */ }
   }
 
   // ---------- terminal wiring ----------
@@ -510,7 +626,7 @@ class SessionManager {
     const s = this.sessions.get(id);
     const rt = this.runtime.get(id);
     if (!s) return;
-    if (rt && s.alive) { rt.expectExit = true; try { rt.pty.kill(); } catch { } }
+    if (rt && s.alive) this._killProc(s, rt);
     this._event(s, 'lifecycle', '用户停止 session', '用户操作');
     this._touch(s);
   }
@@ -519,7 +635,7 @@ class SessionManager {
     const s = this.sessions.get(id);
     if (!s) return;
     const rt = this.runtime.get(id);
-    if (rt && s.alive) { rt.expectExit = true; try { rt.pty.kill(); } catch { } }
+    if (rt && s.alive) this._killProc(s, rt);
     const clients = rt ? rt.clients : new Set();
     setTimeout(() => {
       this._spawn(s);
@@ -554,6 +670,10 @@ class SessionManager {
     const s = this.sessions.get(id);
     if (!s) return;
     if (s.alive) this.stop(id);
+    // alive 标记可能因接管失败而失真,tmux 会话残留一律清理
+    if (s.backend === 'tmux') { try { this._tmux(['kill-session', '-t', `=ccw_${id}`]); } catch { /* 无残留 */ } }
+    try { fs.rmSync(this._exitFile(id), { force: true }); } catch { }
+    try { fs.rmSync(path.join(this.dataDir, 'hooks', `launch-${id}.sh`), { force: true }); } catch { }
     if (s.worktree) {
       try {
         execFileSync('git', ['worktree', 'remove', '--force', s.worktree], { cwd: s.projectDir });
