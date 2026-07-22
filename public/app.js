@@ -379,6 +379,13 @@ function renderWorkspace() {
   term.open($('#term-host'));
   fit.fit();
 
+  // 普通拖选永远优先于程序的鼠标捕获(Claude Code 等 TUI 默认拦走拖选)。
+  // 代价:TUI 收不到鼠标点击/拖拽事件(滚轮不受影响),对键盘驱动的
+  // Claude Code 无影响。覆盖的是 xterm 内部方法,升级 xterm 时需复查。
+  try {
+    term._core._selectionService.shouldForceSelection = () => true;
+  } catch { /* xterm 内部结构变化时退回默认:Option/Shift+拖选 */ }
+
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     const mod = e.ctrlKey || e.metaKey;
