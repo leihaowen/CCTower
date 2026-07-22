@@ -131,6 +131,19 @@ server.on('upgrade', (req, socket, head) => {
   }
 });
 
+// 迷你终端画面推送:2 秒一次,只推有变化的 session
+setInterval(() => {
+  for (const u of manager.collectTails()) broadcast({ type: 'tail', id: u.id, tail: u.tail });
+}, 2000);
+
+// 心跳保活:探测死连接并保持链路活跃(浏览器自动回 pong)
+setInterval(() => {
+  for (const ws of eventClients) {
+    if (ws.readyState === 1) { try { ws.ping(); } catch { } }
+  }
+  manager.pingClients();
+}, 30_000);
+
 server.listen(PORT, HOST, () => {
   console.log(`Agent Workbench MVP 已启动: ${BASE}`);
 });

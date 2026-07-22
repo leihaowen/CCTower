@@ -2,6 +2,7 @@
 'use strict';
 
 const STATUS = {
+  ready:            { label: '就绪',     color: 'var(--c-ready)' },
   executing:        { label: '执行中',   color: 'var(--c-executing)',        pulse: true },
   verifying:        { label: '验证中',   color: 'var(--c-verifying)',        pulse: true },
   needs_decision:   { label: '需要决策', color: 'var(--c-needs_decision)',   breathe: true },
@@ -57,8 +58,12 @@ async function readClipboard() {
 }
 
 /* ---------- websocket: state stream ---------- */
+let eventsWs = null;
 function connectEvents() {
+  if (eventsWs && (eventsWs.readyState === 0 || eventsWs.readyState === 1)) return;
   const ws = new WebSocket(`ws://${location.host}/ws/events`);
+  eventsWs = ws;
+  ws.onopen = () => $('#connbar').hidden = true;
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.type === 'snapshot') {
@@ -69,12 +74,26 @@ function connectEvents() {
       if (m.session.deleted) state.sessions.delete(m.session.id);
       else state.sessions.set(m.session.id, m.session);
       render();
+    } else if (m.type === 'tail') {
+      const s = state.sessions.get(m.id);
+      if (s) s.tailCache = m.tail;
+      document.querySelectorAll(`.mini-term[data-id="${m.id}"]`).forEach((el) => {
+        el.textContent = m.tail;
+        el.scrollTop = el.scrollHeight;
+      });
     } else if (m.type === 'notify') {
       notify(m);
     }
   };
-  ws.onclose = () => setTimeout(connectEvents, 1500);
+  ws.onclose = () => {
+    $('#connbar').hidden = false;
+    setTimeout(connectEvents, 1500);
+  };
 }
+// 标签页长时间挂起后恢复时,立即重建连接,避免页面"假死"
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) connectEvents();
+});
 
 /* ---------- notifications ---------- */
 function notify(m) {
@@ -165,16 +184,29 @@ function inboxSessions() {
   return [...state.sessions.values()].filter((s) => !s.archived && INBOX_GROUPS.some(([k]) => k === s.status));
 }
 
+// 状态灯:绿色跑马灯=运行中,黄色闪烁=需要你,蓝色=就绪,红色=出意外,绿色常亮=完成待审
+function lampClass(s) {
+  if (s.status === 'blocked' || (!s.alive && s.type === 'claude' && s.exitCode > 0)) return 'lamp-err';
+  if (s.status === 'needs_decision' || s.status === 'needs_permission') return 'lamp-warn';
+  if ((s.status === 'executing' || s.status === 'verifying') && s.alive) return 'lamp-run';
+  if (s.status === 'ready' || (s.status === 'terminal_only' && s.alive)) return 'lamp-ready';
+  if (s.status === 'review_ready' || s.status === 'completed') return 'lamp-done';
+  if (s.status === 'stale') return 'lamp-stale';
+  return 'lamp-off';
+}
+
 function cardHTML(s) {
   const st = STATUS[s.status];
   const d = s.brief?.decision;
   return `<div class="card ${st.breathe ? 'breathe' : ''}" tabindex="0" data-id="${s.id}" style="--rail:${st.color}">
     <div class="card-top">
+      <span class="lamp ${lampClass(s)}" title="${st.label}"></span>
       <span class="card-name">${esc(s.name)}</span>
       <span class="card-proj">${esc(dirTail(s.projectDir))}${s.branch ? ' ⎇' + esc(s.branch) : ''}</span>
-      <span class="status-pill" style="--pc:${st.color}"><span class="dot ${st.pulse ? 'pulse' : ''}"></span>${st.label}</span>
+      <span class="status-pill" style="--pc:${st.color}">${st.label}</span>
       <span class="card-time">${ago(s.lastActivityAt)}</span>
     </div>
+    <pre class="mini-term" data-id="${s.id}">${esc(s.tailCache || (s.alive ? '(等待画面…)' : '(未在运行)'))}</pre>
     <div class="card-line">${esc(s.statusLine)}<span class="src">${s.brief ? SRC_LABEL[s.brief.source] : '系统观测'}</span></div>
     ${d && d.question ? `<div class="card-decision">
       <div class="q">${esc(d.question)}</div>
@@ -228,23 +260,14 @@ function renderSessions() {
       <span style="width:12px"></span>
       ${chip('all', '所有类型', 't')}${chip('claude', 'Claude Code', 't')}${chip('terminal', 'Terminal', 't')}
     </div>
-    <div class="rows">${list.map((s) => {
-      const st = STATUS[s.status];
-      return `<div class="row ${s.archived ? 'archived' : ''}" tabindex="0" data-id="${s.id}">
-        <span class="dot ${st.pulse && s.alive ? 'pulse' : ''}" style="--pc:${st.color}"></span>
-        <span class="r-name">${esc(s.name)}</span>
-        <span class="status-pill" style="--pc:${st.color}">${st.label}</span>
-        <span class="r-type">${s.type === 'claude' ? 'claude-code' : 'terminal'}${s.branch ? ' ⎇' : ''}</span>
-        <span class="r-line">${esc(s.statusLine)}</span>
-        <span class="r-time">${ago(s.lastActivityAt)}</span>
-      </div>`;
-    }).join('') || '<div class="empty"><strong>没有匹配的 session</strong></div>'}</div>`;
+    <div class="cards">${list.map(cardHTML).join('') || '<div class="empty"><strong>没有匹配的 session</strong></div>'}</div>`;
   main.querySelectorAll('[data-f]').forEach((b) => b.onclick = () => { state.filter = b.dataset.f; render(); });
   main.querySelectorAll('[data-t]').forEach((b) => b.onclick = () => { state.typeFilter = b.dataset.t; render(); });
-  wireCards('.row');
+  wireCards();
 }
 
 function wireCards(sel = '.card') {
+  main.querySelectorAll('.mini-term').forEach((el) => { el.scrollTop = el.scrollHeight; });
   main.querySelectorAll(sel).forEach((el) => {
     el.addEventListener('click', (e) => {
       const btn = e.target.closest('.opt-btn');
@@ -268,7 +291,7 @@ async function sendDecision(id, answer) {
 }
 
 /* ---------- workspace ---------- */
-let term = null, fit = null, termWs = null, termRO = null;
+let term = null, fit = null, termWs = null, termRO = null, termRetry = null;
 let lastCopy = { text: '', at: 0 };
 
 // 复制当前终端选区。先聚焦终端,保证 execCommand 触发的 copy 事件落在
@@ -311,6 +334,7 @@ function closeWorkspace(backTo = 'inbox') {
   render();
 }
 function disposeTerm() {
+  clearTimeout(termRetry);
   if (termWs) { termWs.onclose = null; termWs.close(); termWs = null; }
   if (termRO) { termRO.disconnect(); termRO = null; }
   if (term) { term.dispose(); term = null; fit = null; }
@@ -354,12 +378,15 @@ function renderWorkspace() {
   $('#ws-name').onchange = (e) => act(s.id, 'rename', e.target.value);
   $('#ws-refresh').onclick = () => act(s.id, 'refresh-brief');
   $('#ws-flag').onclick = () => { act(s.id, 'flag-brief'); toast('已记录', '摘要被标记为不准确'); };
-  $('#ws-restart').onclick = () => act(s.id, 'restart');
-  $('#ws-stop').onclick = () => act(s.id, 'stop');
+  $('#ws-restart').onclick = () => act(s.id, 'restart').then(() => toast('已重启', s.name, null, 2500)).catch((e) => toast('重启失败', e.message));
+  $('#ws-stop').onclick = () => act(s.id, 'stop').then(() => toast('已停止', s.name, null, 2500)).catch((e) => toast('停止失败', e.message));
   $('#ws-archive').onclick = () => { act(s.id, 'archive'); closeWorkspace('sessions'); };
   $('#ws-delete').onclick = () => {
     if (confirm(`删除 session「${s.name}」?${s.worktree ? '\n其 worktree 与分支也会被移除。' : ''}`)) {
-      act(s.id, 'delete'); closeWorkspace('sessions');
+      act(s.id, 'delete')
+        .then(() => toast('已删除', s.name, null, 2500))
+        .catch((e) => toast('删除失败', e.message));
+      closeWorkspace('sessions');
     }
   };
 
@@ -403,17 +430,26 @@ function renderWorkspace() {
   });
 
   let controller = false;
-  termWs = new WebSocket(`ws://${location.host}/ws/term/${s.id}`);
-  termWs.onmessage = (e) => {
-    const m = JSON.parse(e.data);
-    if (m.type === 'data') term.write(m.data);
-    else if (m.type === 'role') {
-      controller = m.controller;
-      $('#ro-bar').hidden = controller;
-      if (controller && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-    } else if (m.type === 'exit') term.write(`\r\n\x1b[90m[进程已退出,code ${m.code}]\x1b[0m\r\n`);
+  const connectTerm = (replay) => {
+    if (replay && term) term.reset(); // 重连时服务端会整体回放缓冲区,先清屏避免重复
+    termWs = new WebSocket(`ws://${location.host}/ws/term/${s.id}`);
+    termWs.onmessage = (e) => {
+      const m = JSON.parse(e.data);
+      if (m.type === 'data') term.write(m.data);
+      else if (m.type === 'role') {
+        controller = m.controller;
+        $('#ro-bar') && ($('#ro-bar').hidden = controller);
+        if (controller && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      } else if (m.type === 'exit') term.write(`\r\n\x1b[90m[进程已退出,code ${m.code}]\x1b[0m\r\n`);
+    };
+    // 断线自动重连(标签页休眠恢复、网络抖动),无需手动刷新
+    termWs.onclose = () => {
+      if (state.view !== 'workspace' || state.currentId !== s.id || !term) return;
+      term.write('\r\n\x1b[90m[连接断开,2 秒后自动重连…]\x1b[0m\r\n');
+      termRetry = setTimeout(() => connectTerm(true), 2000);
+    };
   };
-  termWs.onclose = () => term && term.write('\r\n\x1b[90m[连接断开,刷新页面重连]\x1b[0m\r\n');
+  connectTerm(false);
   term.onData((d) => { if (controller && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'input', data: d })); });
   term.onResize(({ cols, rows }) => { if (controller && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols, rows })); });
   $('#ro-take').onclick = () => termWs.readyState === 1 && termWs.send(JSON.stringify({ type: 'take-control' }));
@@ -499,6 +535,7 @@ $('#form-new').onsubmit = async (e) => {
       command: f.get('command'),
       isolate: f.get('isolate') === 'on',
     });
+    state.sessions.set(s.id, s); // 立即入库,不等 WS 广播,确保能直接打开
     dlg.close();
     e.target.reset();
     openSession(s.id);

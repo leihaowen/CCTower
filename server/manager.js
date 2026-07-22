@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const pty = require('node-pty');
+const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 const { writeHookSettings, protocolPrompt } = require('./claudeSetup');
 
 const ATTENTION = new Set(['needs_decision', 'needs_permission', 'blocked', 'review_ready']);
@@ -101,8 +102,10 @@ class SessionManager {
       createdAt: new Date().toISOString(),
       lastActivityAt: new Date().toISOString(),
       lastOutputAt: null,
-      status: type === 'claude' ? 'executing' : 'terminal_only',
+      lastSemanticAt: new Date().toISOString(), // 最后一次 hook/上报/用户输入,用于 stale 判定
+      status: type === 'claude' ? 'ready' : 'terminal_only',
       statusLine: type === 'claude' ? '正在启动 Claude Code…' : '普通终端,语义未知',
+      tailCache: '',
       alive: false,
       exitCode: null,
       archived: false,
@@ -160,14 +163,23 @@ class SessionManager {
     const p = pty.spawn(file, args, {
       name: 'xterm-256color', cols: 120, rows: 32, cwd: s.cwd, env,
     });
-    const rt = { pty: p, buffer: '', clients: new Set(), controller: null };
+    // headless xterm 维护真实屏幕状态,供列表页迷你终端展示
+    const head = new HeadlessTerminal({ cols: 110, rows: 32, scrollback: 400, allowProposedApi: true });
+    const rt = { pty: p, head, buffer: '', clients: new Set(), controller: null, expectExit: false, booted: false, lastTail: '' };
     this.runtime.set(s.id, rt);
     s.alive = true;
     s.exitCode = null;
 
     p.onData((data) => {
       rt.buffer = (rt.buffer + data).slice(-BUFFER_CAP);
+      try { rt.head.write(data); } catch { /* 极端序列解析失败不影响主流程 */ }
       s.lastOutputAt = new Date().toISOString();
+      if (!rt.booted) {
+        rt.booted = true;
+        if (s.type === 'claude' && s.status === 'ready') {
+          this._setStatus(s, 'ready', s.command ? '已启动,正在提交初始任务' : '已就绪,等待任务');
+        }
+      }
       if (s.status === 'stale') {
         this._setStatus(s, s.type === 'claude' ? 'executing' : 'terminal_only', '恢复输出');
       } else {
@@ -182,15 +194,18 @@ class SessionManager {
     p.onExit(({ exitCode }) => {
       s.alive = false;
       s.exitCode = exitCode;
+      for (const ws of rt.clients) {
+        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'exit', code: exitCode }));
+      }
+      if (!this.sessions.has(s.id)) return; // session 已删除,不再广播状态
       this._event(s, 'lifecycle', `进程退出,exit code ${exitCode}`);
-      if (s.type === 'claude') {
+      if (rt.expectExit) {
+        this._setStatus(s, 'exited', '已被用户停止');
+      } else if (s.type === 'claude') {
         if (exitCode === 0) this._setStatus(s, 'completed', 'Claude 会话已结束');
         else this._setStatus(s, 'blocked', `Claude 进程异常退出(code ${exitCode})`);
       } else {
         this._setStatus(s, 'exited', `进程已退出(code ${exitCode})`);
-      }
-      for (const ws of rt.clients) {
-        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'exit', code: exitCode }));
       }
     });
 
@@ -247,6 +262,7 @@ class SessionManager {
     if (!s || !rt || !s.alive) return false;
     rt.pty.write(text);
     setTimeout(() => { try { rt.pty.write('\r'); } catch { } }, 120);
+    s.lastSemanticAt = new Date().toISOString();
     this._event(s, 'input', `用户从网页发送输入:${text.slice(0, 120)}`, '用户操作');
     if (record) {
       s.decisions.push({ at: new Date().toISOString(), question: record.question || null, answer: text, delivered: true });
@@ -268,6 +284,7 @@ class SessionManager {
     const s = this.sessions.get(id);
     if (!s || s.type !== 'claude') return;
     const msg = (payload && (payload.message || payload.title)) || '';
+    s.lastSemanticAt = new Date().toISOString();
     this._event(s, 'hook', `${event}${msg ? ':' + msg : ''}`);
     switch (event) {
       case 'Notification': {
@@ -275,7 +292,8 @@ class SessionManager {
         if (low.includes('permission') || msg.includes('权限')) {
           this._setStatus(s, 'needs_permission', msg || 'Claude 请求批准一项敏感操作');
         } else if (low.includes('waiting') || msg.includes('等待')) {
-          this._setStatus(s, 'needs_decision', 'Claude 正在等待你的回答');
+          // 尚未领到任务的空闲提示不算"等你决策"
+          if (s.status !== 'ready') this._setStatus(s, 'needs_decision', 'Claude 正在等待你的回答');
         } else if (msg) {
           this._setStatus(s, s.status, msg);
         }
@@ -309,6 +327,7 @@ class SessionManager {
   applyReport(id, r) {
     const s = this.sessions.get(id);
     if (!s || s.type !== 'claude') return false;
+    s.lastSemanticAt = new Date().toISOString();
     s.brief = {
       objective: r.objective || (s.brief && s.brief.objective) || '',
       phase: r.phase || 'executing',
@@ -388,7 +407,7 @@ class SessionManager {
     const s = this.sessions.get(id);
     const rt = this.runtime.get(id);
     if (!s) return;
-    if (rt && s.alive) { try { rt.pty.kill(); } catch { } }
+    if (rt && s.alive) { rt.expectExit = true; try { rt.pty.kill(); } catch { } }
     this._event(s, 'lifecycle', '用户停止 session', '用户操作');
     this._touch(s);
   }
@@ -397,7 +416,7 @@ class SessionManager {
     const s = this.sessions.get(id);
     if (!s) return;
     const rt = this.runtime.get(id);
-    if (rt && s.alive) { try { rt.pty.kill(); } catch { } }
+    if (rt && s.alive) { rt.expectExit = true; try { rt.pty.kill(); } catch { } }
     const clients = rt ? rt.clients : new Set();
     setTimeout(() => {
       this._spawn(s);
@@ -408,7 +427,7 @@ class SessionManager {
         if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'data', data: '\r\n\x1b[36m[已重启]\x1b[0m\r\n' }));
       }
       this._event(s, 'lifecycle', '用户重启 session', '用户操作');
-      this._setStatus(s, s.type === 'claude' ? 'executing' : 'terminal_only', '已重启');
+      this._setStatus(s, s.type === 'claude' ? 'ready' : 'terminal_only', '已重启');
     }, 300);
   }
 
@@ -448,9 +467,54 @@ class SessionManager {
     for (const s of this.sessions.values()) {
       if (!s.alive || s.type !== 'claude') continue;
       if (!['executing', 'verifying'].includes(s.status)) continue;
-      const last = s.lastOutputAt ? Date.parse(s.lastOutputAt) : Date.parse(s.createdAt);
+      // TUI 空闲时也会周期性重绘,不能以原始输出判定;以最后一次 hook/上报/用户输入为准
+      const last = Date.parse(s.lastSemanticAt || s.createdAt);
       if (now - last > STALE_MS) {
-        this._setStatus(s, 'stale', `已 ${Math.round((now - last) / 60000)} 分钟无输出,但进程未结束`);
+        this._setStatus(s, 'stale', `已 ${Math.round((now - last) / 60000)} 分钟无实质进展(hook/上报),但进程未结束`);
+      }
+    }
+  }
+
+  // ---------- 迷你终端画面 ----------
+
+  // 返回自上次调用以来画面有变化的 session 的最新屏幕文本
+  collectTails() {
+    const out = [];
+    for (const [id, rt] of this.runtime) {
+      const s = this.sessions.get(id);
+      if (!s || !s.alive) continue;
+      const tail = this._tailOf(rt);
+      if (tail !== rt.lastTail) {
+        rt.lastTail = tail;
+        s.tailCache = tail;
+        out.push({ id, tail });
+      }
+    }
+    if (out.length) this._save();
+    return out;
+  }
+
+  _tailOf(rt) {
+    try {
+      const buf = rt.head.buffer.active;
+      const total = buf.length;
+      const lines = [];
+      for (let i = Math.max(0, total - 40); i < total; i++) {
+        const line = buf.getLine(i);
+        lines.push(line ? line.translateToString(true) : '');
+      }
+      while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+      return lines.slice(-16).join('\n');
+    } catch {
+      return rt.lastTail;
+    }
+  }
+
+  // 心跳:探活并保持连接,断开的客户端由 ws 库回收
+  pingClients() {
+    for (const rt of this.runtime.values()) {
+      for (const ws of rt.clients) {
+        if (ws.readyState === 1) { try { ws.ping(); } catch { } }
       }
     }
   }
