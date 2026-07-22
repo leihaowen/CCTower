@@ -269,6 +269,35 @@ async function sendDecision(id, answer) {
 
 /* ---------- workspace ---------- */
 let term = null, fit = null, termWs = null, termRO = null;
+let lastCopy = { text: '', at: 0 };
+
+// 复制当前终端选区。先聚焦终端,保证 execCommand 触发的 copy 事件落在
+// xterm 的 textarea 上(由 xterm 内建处理写入剪贴板,无需权限)。
+function copyTermSelection() {
+  if (!term || !term.hasSelection()) return false;
+  const text = term.getSelection();
+  const dup = text === lastCopy.text && Date.now() - lastCopy.at < 3000;
+  if (dup) return true;
+  term.focus();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { /* 走补充路径 */ }
+  if (!ok && navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => { });
+  lastCopy = { text, at: Date.now() };
+  toast('已复制', text.length > 60 ? text.slice(0, 60) + '…' : text, null, 1600);
+  return true;
+}
+// 选中即复制:在文档层面监听松开鼠标(Option+拖选常在终端容器外松手)。
+// 仅当本次手势改变了选区才复制,避免点击页面其他控件时误触发、抢焦点。
+let selAtMouseDown = '';
+document.addEventListener('mousedown', () => {
+  selAtMouseDown = term && term.hasSelection() ? term.getSelection() : '';
+});
+document.addEventListener('mouseup', () => {
+  setTimeout(() => {
+    if (!term || !term.hasSelection()) return;
+    if (term.getSelection() !== selAtMouseDown) copyTermSelection();
+  }, 0);
+});
 
 function openSession(id) {
   state.view = 'workspace';
@@ -350,25 +379,12 @@ function renderWorkspace() {
   term.open($('#term-host'));
   fit.fit();
 
-  // 剪贴板:同步 document.execCommand('copy') 会触发 xterm 内建的 copy 事件处理,
-  // 由它把终端选区写入剪贴板 —— 不依赖 navigator.clipboard 的权限授予。
-  const doCopy = () => {
-    if (!term.hasSelection()) return false;
-    const text = term.getSelection();
-    let ok = false;
-    try { ok = document.execCommand('copy'); } catch { /* 走补充路径 */ }
-    if (!ok && navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => { });
-    toast('已复制', text.length > 60 ? text.slice(0, 60) + '…' : text, null, 1600);
-    return true;
-  };
-  // 选中即复制(松开鼠标后触发,避开拖选过程中的中间状态)
-  $('#term-host').addEventListener('mouseup', () => setTimeout(() => { if (term.hasSelection()) doCopy(); }, 0));
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.shiftKey && e.code === 'KeyC') { doCopy(); return false; }
+    if (mod && e.shiftKey && e.code === 'KeyC') { copyTermSelection(); return false; }
     if (mod && !e.shiftKey && e.code === 'KeyC' && term.hasSelection()) {
-      doCopy();
+      copyTermSelection();
       term.clearSelection(); // Ctrl+C:先复制,再按才是发中断;Cmd+C 只复制
       return false;
     }
