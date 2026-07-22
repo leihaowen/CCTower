@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { computeDiff } = require('./gitReview');
+const { computeDiff, squashMerge } = require('./gitReview');
 
 function run(args, cwd) { return execFileSync('git', args, { cwd, encoding: 'utf8' }); }
 function write(dir, f, content) {
@@ -73,4 +73,58 @@ test('computeDiff:projectDir detached HEAD 报错', () => {
   const fx = makeFixture();
   run(['checkout', '--detach'], fx.projectDir);
   assert.throws(() => computeDiff(fx), /detached HEAD/);
+});
+
+test('squashMerge:干净合并,main 恰好多一条 squash 提交', () => {
+  const fx = makeFixture();
+  write(fx.worktree, 'a.txt', 'line1\nline2\nline3\n');
+  commitAll(fx.worktree, 'c1');
+  write(fx.worktree, 'a.txt', 'line1\nline2\nline3\nline4\n');
+  commitAll(fx.worktree, 'c2');
+  const before = Number(run(['rev-list', '--count', 'main'], fx.projectDir).trim());
+  const r = squashMerge({ ...fx, message: 'ccw: 测试合并\n\n任务:验收' });
+  assert.equal(r.merged, true);
+  assert.equal(r.target, 'main');
+  assert.ok(r.hash);
+  assert.equal(Number(run(['rev-list', '--count', 'main'], fx.projectDir).trim()), before + 1);
+  assert.ok(fs.readFileSync(path.join(fx.projectDir, 'a.txt'), 'utf8').includes('line4'));
+  assert.equal(run(['status', '--porcelain'], fx.projectDir).trim(), '');
+  assert.ok(run(['log', '-1', '--format=%s'], fx.projectDir).includes('ccw: 测试合并'));
+});
+
+test('squashMerge:worktree 未提交改动自动收拢进合并', () => {
+  const fx = makeFixture();
+  write(fx.worktree, 'new.txt', 'dirty\n'); // 未提交也未跟踪
+  const r = squashMerge({ ...fx, message: 'm' });
+  assert.equal(r.merged, true);
+  assert.equal(fs.readFileSync(path.join(fx.projectDir, 'new.txt'), 'utf8'), 'dirty\n');
+});
+
+test('squashMerge:冲突被预检拦下,main 无任何改动', () => {
+  const fx = makeFixture();
+  write(fx.worktree, 'a.txt', 'branch-version\n');
+  commitAll(fx.worktree, 'branch change');
+  write(fx.projectDir, 'a.txt', 'main-version\n');
+  commitAll(fx.projectDir, 'main change');
+  const head = run(['rev-parse', 'HEAD'], fx.projectDir).trim();
+  const r = squashMerge({ ...fx, message: 'm' });
+  assert.equal(r.merged, false);
+  assert.equal(r.conflict, true);
+  assert.deepEqual(r.files, ['a.txt']);
+  assert.equal(run(['rev-parse', 'HEAD'], fx.projectDir).trim(), head);
+  assert.equal(run(['status', '--porcelain'], fx.projectDir).trim(), '');
+});
+
+test('squashMerge:projectDir 有 tracked 未提交改动时拒绝', () => {
+  const fx = makeFixture();
+  write(fx.worktree, 'new.txt', 'x\n');
+  commitAll(fx.worktree, 'c');
+  write(fx.projectDir, 'a.txt', 'local edit\n'); // 用户自己的改动,不提交
+  assert.throws(() => squashMerge({ ...fx, message: 'm' }), /未提交改动/);
+});
+
+test('squashMerge:projectDir detached HEAD 报错', () => {
+  const fx = makeFixture();
+  run(['checkout', '--detach'], fx.projectDir);
+  assert.throws(() => squashMerge({ ...fx, message: 'm' }), /detached HEAD/);
 });

@@ -61,4 +61,42 @@ function computeDiff({ projectDir, worktree, branch }) {
   return { target, branch, behind, files, diff, truncated };
 }
 
-module.exports = { computeDiff, git, gitLoose, targetBranchOf };
+function squashMerge({ projectDir, worktree, branch, message }) {
+  const target = targetBranchOf(projectDir);
+
+  // 用户自己的未提交改动不能代为处理;untracked 放行,若与合并内容碰撞由 git 自身安全中止
+  const dirtyTracked = git(['status', '--porcelain'], projectDir).split('\n')
+    .filter((l) => l.trim() && !l.startsWith('??'));
+  if (dirtyTracked.length) {
+    throw new Error(`项目目录有未提交改动(${dirtyTracked.length} 个文件),请先自行提交或撤销后再合并`);
+  }
+  try { git(['merge-base', target, branch], projectDir); }
+  catch { throw new Error(`分支 ${branch} 与 ${target} 没有共同祖先,无法合并`); }
+
+  // 收拢 worktree 未提交改动(含新文件)到 session 分支,不碰目标分支
+  if (git(['status', '--porcelain'], worktree).trim()) {
+    git(['add', '-A'], worktree);
+    git(['commit', '-m', 'ccw: 合并前自动提交未落盘改动'], worktree);
+  }
+
+  // 无副作用冲突预检(git ≥ 2.38):退出码 1 = 有冲突,目标分支未被触碰
+  const pre = gitLoose(['merge-tree', '--write-tree', '--name-only', target, branch], projectDir);
+  if (pre.status === 1) {
+    const lines = pre.stdout.split('\n');
+    const blank = lines.indexOf('');
+    const files = [...new Set(lines.slice(1, blank === -1 ? undefined : blank).filter(Boolean))];
+    return { merged: false, conflict: true, target, files };
+  }
+  if (pre.status !== 0) throw new Error('冲突预检失败:' + pre.stdout.slice(0, 300));
+
+  try {
+    git(['merge', '--squash', branch], projectDir);
+    git(['commit', '-m', message], projectDir);
+  } catch (e) {
+    try { git(['reset', '--merge'], projectDir); } catch { /* best effort */ }
+    throw new Error('合并执行失败,项目目录已恢复:' + String(e.message).split('\n')[0]);
+  }
+  return { merged: true, target, hash: git(['rev-parse', '--short', 'HEAD'], projectDir).trim() };
+}
+
+module.exports = { computeDiff, squashMerge, git, gitLoose, targetBranchOf };
