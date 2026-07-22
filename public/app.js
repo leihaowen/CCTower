@@ -322,7 +322,7 @@ function diffFileHTML(chunk, i) {
   const fpath = m ? m[1] : lines[0];
   const body = lines.map((l) => {
     let c = 'ctx';
-    if (/^(diff --git|index |new file|deleted file|Binary files|similarity|rename |\+\+\+|---)/.test(l)) c = 'meta';
+    if (/^(diff --git|index |new file|deleted file|old mode|new mode|copy from|copy to|Binary files|similarity|rename |\+\+\+|---)/.test(l)) c = 'meta';
     else if (l.startsWith('@@')) c = 'hunk';
     else if (l.startsWith('+')) c = 'add';
     else if (l.startsWith('-')) c = 'del';
@@ -336,12 +336,13 @@ function diffFileHTML(chunk, i) {
 }
 
 function renderDiffOverlay() {
-  closeDiff();
+  const stale = $('#diff-overlay');
+  if (stale) stale.remove();
   const { id, data } = diffCtx || {};
   const s = state.sessions.get(id);
   if (!s || !data) return;
-  const totalAdd = data.files.reduce((n, f) => n + (f.add || 0), 0);
-  const totalDel = data.files.reduce((n, f) => n + (f.del || 0), 0);
+  const totalAdd = data.files.reduce((n, f) => n + (Number(f.add) || 0), 0);
+  const totalDel = data.files.reduce((n, f) => n + (Number(f.del) || 0), 0);
   const chunks = data.diff ? data.diff.split(/^(?=diff --git )/m).filter((c) => c.trim()) : [];
   const el = document.createElement('div');
   el.id = 'diff-overlay';
@@ -350,7 +351,7 @@ function renderDiffOverlay() {
       <b>${esc(s.name)}</b>
       <span class="diff-branch">${esc(data.branch)} → ${esc(data.target)}</span>
       <span class="diff-stat"><i class="add">+${totalAdd}</i> <i class="del">−${totalDel}</i> · ${data.files.length} 个文件</span>
-      ${data.behind ? `<span class="diff-warn">⚠ ${esc(data.target)} 已前进 ${data.behind} 条提交,可能有冲突</span>` : ''}
+      ${data.behind ? `<span class="diff-warn">⚠ ${esc(data.target)} 已前进 ${Number(data.behind) || 0} 条提交,可能有冲突</span>` : ''}
       ${data.truncated ? '<span class="diff-warn">diff 过大已截断,完整内容请进终端查看</span>' : ''}
       <span style="flex:1"></span>
       <button class="btn-ghost" id="diff-refresh">刷新</button>
@@ -361,7 +362,7 @@ function renderDiffOverlay() {
     <div class="diff-body">
       <nav class="diff-nav">${data.files.map((f, i) => `
         <a data-i="${i}"><span class="p">${esc(f.path)}</span>
-          <span class="n">${f.add == null ? '二进制' : `+${f.add} −${f.del}`}</span></a>`).join('')}
+          <span class="n">${f.add == null ? '二进制' : `+${Number(f.add) || 0} −${Number(f.del) || 0}`}</span></a>`).join('')}
       </nav>
       <div class="diff-main">${chunks.map(diffFileHTML).join('') || '<div class="empty"><strong>没有改动</strong></div>'}</div>
     </div>`;
@@ -382,7 +383,7 @@ function renderDiffOverlay() {
         closeDiff();
         return;
       }
-      if (r.conflict) showConflict(id, r);
+      if (r.conflict) showConflict(id, r, el);
     } catch (e) {
       toast('合并失败', e.message);
     }
@@ -390,13 +391,13 @@ function renderDiffOverlay() {
   };
 }
 
-function showConflict(id, r) {
-  const b = $('#diff-banner');
+function showConflict(id, r, el) {
+  const b = $('#diff-banner', el);
   if (!b) return;
   b.hidden = false;
   b.innerHTML = `<b>合并有冲突,${esc(r.target)} 未被改动。</b>冲突文件:${r.files.map(esc).join('、')}
     <button class="btn-ghost" id="diff-resolve">让 Claude 解决冲突</button>`;
-  $('#diff-resolve').onclick = async () => {
+  $('#diff-resolve', el).onclick = async () => {
     try {
       await act(id, 'resolve-conflict', { target: r.target, files: r.files });
       toast('已发送指令', 'Claude 将在其 worktree 中解决冲突,完成后可重新合并');
