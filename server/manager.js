@@ -68,6 +68,7 @@ class SessionManager {
 
   _setStatus(s, status, statusLine, source = '系统观测') {
     const changed = s.status !== status || s.statusLine !== statusLine;
+    if (s.status !== status) s.statusChangedAt = new Date().toISOString();
     s.status = status;
     if (statusLine) s.statusLine = statusLine;
     if (changed) this._event(s, 'status', `${status} — ${s.statusLine}`, source);
@@ -106,6 +107,7 @@ class SessionManager {
       lastOutputAt: null,
       lastSemanticAt: new Date().toISOString(), // 最后一次 hook/上报/用户输入,用于 stale 判定
       status: type === 'claude' ? 'ready' : 'terminal_only',
+      statusChangedAt: new Date().toISOString(),
       statusLine: type === 'claude' ? '正在启动 Claude Code…' : '普通终端,语义未知',
       tailCache: '',
       alive: false,
@@ -321,7 +323,10 @@ class SessionManager {
           this._setStatus(s, 'needs_permission', msg || 'Claude 请求批准一项敏感操作');
         } else if (low.includes('waiting') || msg.includes('等待')) {
           // 尚未领到任务的空闲提示不算"等你决策"
-          if (s.status !== 'ready') this._setStatus(s, 'needs_decision', 'Claude 正在等待你的回答');
+          if (s.status !== 'ready') {
+            const q = s.brief && s.brief.decision && s.brief.decision.question;
+            this._setStatus(s, 'needs_decision', q ? `需要你决定:${q}` : 'Claude 正在等待你的回答', q ? 'Agent 上报' : '系统观测');
+          }
         } else if (msg) {
           this._setStatus(s, s.status, msg);
         }
@@ -371,7 +376,13 @@ class SessionManager {
     s.briefFlagged = false;
     this._event(s, 'report', `Agent 上报:phase=${s.brief.phase}${s.brief.decision ? ',需要决策' : ''}${s.brief.blocker ? ',有阻塞' : ''}`, 'Agent 上报');
     if (s.brief.decision) {
-      this._setStatus(s, 'needs_decision', `需要你决定:${s.brief.decision.question}`, 'Agent 上报');
+      // 上报发生在回合中途,agent 往往还在继续输出;先不置黄灯不通知,
+      // 待 Stop hook 确认它真正停下等输入后再切 needs_decision(见 applyHook)
+      if (s.status === 'needs_decision') {
+        this._setStatus(s, 'needs_decision', `需要你决定:${s.brief.decision.question}`, 'Agent 上报');
+      } else {
+        this._setStatus(s, 'executing', `即将需要你决定:${s.brief.decision.question}`, 'Agent 上报');
+      }
     } else if (s.brief.blocker) {
       this._setStatus(s, 'blocked', `阻塞:${s.brief.blocker}`, 'Agent 上报');
     } else if (s.brief.phase === 'verifying') {
@@ -545,6 +556,22 @@ class SessionManager {
     } catch {
       return rt.lastTail;
     }
+  }
+
+  // 强制重绘:轻微抖动 PTY 尺寸触发 SIGWINCH,让 TUI 全量重画
+  redraw(id) {
+    const s = this.sessions.get(id);
+    const rt = this.runtime.get(id);
+    if (!s || !rt || !s.alive) return false;
+    const { cols, rows } = rt.pty;
+    try {
+      rt.pty.resize(cols + 1, rows);
+      rt.head.resize(cols + 1, rows);
+      setTimeout(() => {
+        try { rt.pty.resize(cols, rows); rt.head.resize(cols, rows); } catch { }
+      }, 80);
+    } catch { return false; }
+    return true;
   }
 
   // 心跳:上一轮没回 pong 的连接视为死连接,主动 terminate。

@@ -81,6 +81,7 @@ app.post('/api/sessions/:id/action', (req, res) => {
     unarchive: () => manager.archive(id, false),
     delete: () => manager.remove(id),
     'refresh-brief': () => manager.refreshBrief(id),
+    redraw: () => manager.redraw(id),
     'flag-brief': () => manager.flagBrief(id),
     note: () => manager.setNote(id, value),
   };

@@ -122,7 +122,7 @@ function briefHTML(s) {
       <dl><dt>状态</dt><dd>${esc(s.statusLine)}</dd>
       ${s.type === 'terminal' ? `<dt>说明</dt><dd>普通终端,平台不推断业务进度${s.note ? '' : ';可在详情页写手工备注'}</dd>` : '<dt>摘要</dt><dd>尚无 Agent 上报;可在详情页刷新摘要</dd>'}
       ${s.note ? `<dt>备注</dt><dd>${esc(s.note)}</dd>` : ''}</dl>
-      <div class="meta"><span>来源:系统观测</span><span>${ago(s.lastActivityAt)}</span></div></div>`;
+      <div class="meta"><span>来源:系统观测</span><span>最近活动 ${ago(s.lastActivityAt)}</span></div></div>`;
   }
   const prog = b.progress && b.progress.total
     ? `<dd>${b.progress.done}/${b.progress.total}${b.completed?.length ? ',已完成 ' + esc(b.completed.slice(-2).join('、')) : ''}
@@ -139,7 +139,7 @@ function briefHTML(s) {
       <dt>下一步</dt><dd>${esc(b.next_action || '—')}</dd>
       ${b.evidence?.length ? `<dt>证据</dt><dd>${esc(b.evidence.slice(-3).join(' · '))}</dd>` : ''}
     </dl>
-    <div class="meta"><span>来源:${SRC_LABEL[b.source] || b.source}${s.briefFlagged ? ' · 已被标记不准确' : ''}</span><span>${ago(b.updated_at)}</span></div>
+    <div class="meta"><span>来源:${SRC_LABEL[b.source] || b.source}${s.briefFlagged ? ' · 已被标记不准确' : ''}</span><span>${b.source === 'agent_reported' ? '上报于' : '生成于'} ${ago(b.updated_at)}</span></div>
   </div>`;
 }
 
@@ -204,7 +204,7 @@ function cardHTML(s) {
       <span class="card-name">${esc(s.name)}</span>
       <span class="card-proj">${esc(dirTail(s.projectDir))}${s.branch ? ' ⎇' + esc(s.branch) : ''}</span>
       <span class="status-pill" style="--pc:${st.color}">${st.label}</span>
-      <span class="card-time">${ago(s.lastActivityAt)}</span>
+      <span class="card-time" title="进入当前状态的时长">${ago(s.statusChangedAt || s.lastActivityAt)}</span>
     </div>
     <pre class="mini-term" data-id="${s.id}">${esc(s.tailCache || (s.alive ? '(等待画面…)' : '(未在运行)'))}</pre>
     <div class="card-line">${esc(s.statusLine)}<span class="src">${s.brief ? SRC_LABEL[s.brief.source] : '系统观测'}</span></div>
@@ -356,6 +356,7 @@ function renderWorkspace() {
       <span class="status-pill" id="ws-pill" style="--pc:${st.color}"><span class="dot"></span>${st.label}</span>
       <span class="ws-meta" id="ws-meta"></span>
       <div class="ws-actions">
+        <button class="btn-ghost" id="ws-redraw" title="重连终端并让 TUI 全量重绘,修复画面/尺寸异常">⟳ 刷新画面</button>
         <button class="btn-ghost" id="ws-refresh">刷新摘要</button>
         <button class="btn-ghost" id="ws-flag">摘要不准确</button>
         <button class="btn-ghost" id="ws-restart">重启</button>
@@ -375,6 +376,14 @@ function renderWorkspace() {
   </div>`;
 
   $('#ws-back').onclick = () => closeWorkspace('inbox');
+  $('#ws-redraw').onclick = () => {
+    clearTimeout(termRetry);
+    if (termWs) { termWs.onclose = null; termWs.close(); }
+    if (fit) fit.fit();
+    connectTerm(true); // 重连:回放缓冲 + 以当前窗口尺寸重新 resize
+    setTimeout(() => act(s.id, 'redraw'), 500); // 抖动 PTY 尺寸触发 SIGWINCH 全量重绘
+    toast('已刷新', '终端已重连并请求重绘', null, 2000);
+  };
   $('#ws-name').onchange = (e) => act(s.id, 'rename', e.target.value);
   $('#ws-refresh').onclick = () => act(s.id, 'refresh-brief');
   $('#ws-flag').onclick = () => { act(s.id, 'flag-brief'); toast('已记录', '摘要被标记为不准确'); };
@@ -548,6 +557,7 @@ $('#form-new').onsubmit = async (e) => {
 
 /* ---------- nav & boot ---------- */
 document.querySelectorAll('.nav-item').forEach((b) => b.onclick = () => { disposeTerm(); state.view = b.dataset.view; state.currentId = null; render(); });
+$('#btn-reload').onclick = () => location.reload();
 $('#btn-notify').onclick = async () => {
   const p = await Notification.requestPermission();
   toast('桌面通知', p === 'granted' ? '已开启:需要决策/权限/阻塞时会提醒你' : '未授权,仅使用页面内提醒');
