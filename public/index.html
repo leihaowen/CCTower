@@ -25,6 +25,7 @@
     <div class="sidebar-foot">
       <button id="btn-new" class="btn-primary">＋ 新建 Session</button>
       <button id="btn-notify" class="btn-ghost" title="开启浏览器桌面通知">开启桌面通知</button>
+      <button id="btn-settings" class="btn-ghost" title="飞书推送等通知偏好">通知设置</button>
       <button id="btn-reload" class="btn-ghost" title="重新加载整个页面">⟳ 刷新页面</button>
     </div>
   </aside>
@@ -52,6 +53,22 @@
     <div class="dlg-actions">
       <button type="button" id="dlg-cancel" class="btn-ghost">取消</button>
       <button type="submit" class="btn-primary">创建</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-settings">
+  <form id="form-settings" method="dialog">
+    <h2>通知设置</h2>
+    <label class="field">飞书群机器人 Webhook URL
+      <input name="feishuWebhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…">
+    </label>
+    <label class="check"><input type="checkbox" name="notifyReviewReady">
+      任务完成待审也推送<em>默认只推送需要决策 / 需要权限 / 阻塞</em></label>
+    <div class="dlg-actions">
+      <button type="button" id="settings-test" class="btn-ghost">发测试消息</button>
+      <button type="button" id="settings-cancel" class="btn-ghost">取消</button>
+      <button type="submit" class="btn-primary">保存</button>
     </div>
   </form>
 </dialog>

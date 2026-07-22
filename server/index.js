@@ -37,11 +37,33 @@ function broadcast(obj) {
   for (const ws of eventClients) if (ws.readyState === 1) ws.send(msg);
 }
 
+// ---------- 通知配置(飞书群机器人 webhook)----------
+const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+let config = { feishuWebhook: '', notifyReviewReady: false };
+try { config = { ...config, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) }; } catch { /* 未配置 */ }
+const saveConfig = () => fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+
+const REASON_LABEL = { needs_decision: '需要决策', needs_permission: '需要权限', blocked: '阻塞', review_ready: '完成待审' };
+function pushFeishu(text) {
+  if (!config.feishuWebhook) return Promise.resolve({ skipped: true });
+  return fetch(config.feishuWebhook, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ msg_type: 'text', content: { text } }),
+  }).then((r) => r.json()).catch((e) => ({ error: e.message }));
+}
+
 const manager = new SessionManager({
   dataDir: DATA_DIR,
   baseUrl: BASE,
   onChange: (s) => broadcast({ type: 'session', session: s.deleted ? { id: s.id, deleted: true } : publicSession(s) }),
-  onNotify: (s, reason) => broadcast({ type: 'notify', id: s.id, name: s.name, reason, statusLine: s.statusLine }),
+  onNotify: (s, reason) => {
+    broadcast({ type: 'notify', id: s.id, name: s.name, reason, statusLine: s.statusLine });
+    // 出圈推送:决策/权限/阻塞必推,完成待审按配置;去重由状态机的 lastNotified 保证
+    if (reason !== 'review_ready' || config.notifyReviewReady) {
+      pushFeishu(`[CCTower] ${s.name} · ${REASON_LABEL[reason] || reason}\n${s.statusLine}`);
+    }
+  },
 });
 
 function publicSession(s) {
@@ -114,6 +136,23 @@ app.post('/api/hook/:id/:event', (req, res) => {
 app.post('/api/report/:id', (req, res) => {
   const ok = manager.applyReport(req.params.id, req.body || {});
   res.json({ ok });
+});
+
+app.get('/api/settings', (_req, res) => res.json(config));
+app.post('/api/settings', (req, res) => {
+  const { feishuWebhook, notifyReviewReady } = req.body || {};
+  if (feishuWebhook !== undefined) {
+    const url = String(feishuWebhook).trim();
+    if (url && !/^https:\/\//.test(url)) return res.status(400).json({ error: 'webhook 必须是 https URL' });
+    config.feishuWebhook = url;
+  }
+  if (notifyReviewReady !== undefined) config.notifyReviewReady = !!notifyReviewReady;
+  saveConfig();
+  res.json(config);
+});
+app.post('/api/settings/test', async (_req, res) => {
+  const r = await pushFeishu('[CCTower] 测试消息:通知链路正常 ✅');
+  res.json(r);
 });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, sessions: manager.list().length }));

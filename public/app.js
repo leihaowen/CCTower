@@ -698,6 +698,28 @@ $('#form-new').onsubmit = async (e) => {
 /* ---------- nav & boot ---------- */
 document.querySelectorAll('.nav-item').forEach((b) => b.onclick = () => { disposeTerm(); state.view = b.dataset.view; state.currentId = null; render(); });
 $('#btn-reload').onclick = () => location.reload();
+const dlgSettings = $('#dlg-settings');
+$('#btn-settings').onclick = async () => {
+  const c = await api('/api/settings');
+  dlgSettings.querySelector('[name=feishuWebhook]').value = c.feishuWebhook || '';
+  dlgSettings.querySelector('[name=notifyReviewReady]').checked = !!c.notifyReviewReady;
+  dlgSettings.showModal();
+};
+$('#settings-cancel').onclick = () => dlgSettings.close();
+$('#settings-test').onclick = async () => {
+  await saveSettings();
+  const r = await api('/api/settings/test', {});
+  toast('测试消息', r.skipped ? '未配置 webhook' : (r.code === 0 || r.StatusCode === 0 ? '已发送,去飞书看看' : '发送失败:' + JSON.stringify(r).slice(0, 80)));
+};
+async function saveSettings() {
+  const f = new FormData($('#form-settings'));
+  return api('/api/settings', { feishuWebhook: f.get('feishuWebhook'), notifyReviewReady: f.get('notifyReviewReady') === 'on' });
+}
+$('#form-settings').onsubmit = async (e) => {
+  e.preventDefault();
+  try { await saveSettings(); dlgSettings.close(); toast('已保存', '通知设置已更新', null, 2500); }
+  catch (err) { toast('保存失败', err.message); }
+};
 $('#btn-notify').onclick = async () => {
   const p = await Notification.requestPermission();
   toast('桌面通知', p === 'granted' ? '已开启:需要决策/权限/阻塞时会提醒你' : '未授权,仅使用页面内提醒');
