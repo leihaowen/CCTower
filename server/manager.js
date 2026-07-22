@@ -767,6 +767,33 @@ class SessionManager {
     this._touch(s);
   }
 
+  _cleanupWorktree(s) {
+    if (!s.worktree) return;
+    try {
+      execFileSync('git', ['worktree', 'remove', '--force', s.worktree], { cwd: s.projectDir });
+      execFileSync('git', ['branch', '-D', s.branch], { cwd: s.projectDir });
+      this._event(s, 'lifecycle', `已清理 worktree 与分支 ${s.branch}`, '用户操作');
+      s.worktree = null;
+      s.branch = null;
+    } catch (e) {
+      this._event(s, 'warning', `清理 worktree 失败:${String(e.message).split('\n')[0].slice(0, 80)}`);
+    }
+  }
+
+  // 合并后收尾一条龙:停止进程、清理 worktree 与分支、归档;保留会话记录与时间线
+  finish(id) {
+    const s = this.sessions.get(id);
+    if (!s) return false;
+    if (s.alive) this.stop(id);
+    setTimeout(() => {
+      this._cleanupWorktree(s);
+      s.archived = true;
+      this._event(s, 'lifecycle', '合并完成,session 已归档收尾', '用户操作');
+      this._touch(s);
+    }, 500);
+    return true;
+  }
+
   remove(id) {
     const s = this.sessions.get(id);
     if (!s) return;
@@ -775,12 +802,7 @@ class SessionManager {
     if (s.backend === 'tmux') { try { this._tmux(['kill-session', '-t', `=ccw_${id}`]); } catch { /* 无残留 */ } }
     try { fs.rmSync(this._exitFile(id), { force: true }); } catch { }
     try { fs.rmSync(path.join(this.dataDir, 'hooks', `launch-${id}.sh`), { force: true }); } catch { }
-    if (s.worktree) {
-      try {
-        execFileSync('git', ['worktree', 'remove', '--force', s.worktree], { cwd: s.projectDir });
-        execFileSync('git', ['branch', '-D', s.branch], { cwd: s.projectDir });
-      } catch { /* best effort */ }
-    }
+    this._cleanupWorktree(s);
     this.sessions.delete(id);
     this.runtime.delete(id);
     this._save();

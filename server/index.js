@@ -112,6 +112,7 @@ app.post('/api/sessions/:id/action', (req, res) => {
     redraw: () => manager.redraw(id),
     'approve-permission': () => manager.permissionAction(id, true),
     'deny-permission': () => manager.permissionAction(id, false),
+    finish: () => manager.finish(id),
     'flag-brief': () => manager.flagBrief(id),
     note: () => manager.setNote(id, value),
     merge: () => manager.merge(id),
@@ -136,6 +137,17 @@ app.post('/api/hook/:id/:event', (req, res) => {
 app.post('/api/report/:id', (req, res) => {
   const ok = manager.applyReport(req.params.id, req.body || {});
   res.json({ ok });
+});
+
+// 最近使用过的项目目录(新建 session 下拉候选)
+app.get('/api/projects', (_req, res) => {
+  const seen = new Map();
+  for (const s of manager.list()) {
+    seen.set(s.projectDir, Math.max(seen.get(s.projectDir) || 0, Date.parse(s.lastActivityAt) || 0));
+  }
+  seen.set(process.cwd(), seen.get(process.cwd()) || 1);
+  const dirs = [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([d]) => d).slice(0, 12);
+  res.json({ dirs });
 });
 
 app.get('/api/settings', (_req, res) => res.json(config));

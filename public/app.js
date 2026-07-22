@@ -391,8 +391,14 @@ function renderDiffOverlay() {
     try {
       const r = await act(id, 'merge');
       if (r.merged) {
-        toast(`已合并到 ${r.target}(${r.hash})`, '点击可归档该 session', () => act(id, 'archive'));
         closeDiff();
+        if (confirm(`已合并到 ${r.target}(${r.hash})。\n\n一键收尾:停止该 session、清理 worktree 与分支、归档?\n(会话记录与时间线保留)`)) {
+          await act(id, 'finish');
+          toast('已收尾', '进程已停止,worktree 与分支已清理,session 已归档', null, 5000);
+          closeWorkspace('sessions');
+        } else {
+          toast(`已合并到 ${r.target}(${r.hash})`, '稍后可在工作区手动归档', null, 5000);
+        }
         return;
       }
       if (r.conflict) showConflict(id, r, el);
@@ -668,7 +674,16 @@ function updatePanels(s) {
 
 /* ---------- new session dialog ---------- */
 const dlg = $('#dlg-new');
-$('#btn-new').onclick = () => { dlg.showModal(); syncTypeUI(); };
+$('#btn-new').onclick = async () => {
+  dlg.showModal();
+  syncTypeUI();
+  try {
+    const { dirs } = await api('/api/projects');
+    $('#proj-list').innerHTML = dirs.map((d) => `<option value="${esc(d)}">`).join('');
+    const inp = dlg.querySelector('[name=projectDir]');
+    if (!inp.value && dirs[0]) inp.placeholder = dirs[0] + '(留空使用)';
+  } catch { /* 列表失败不影响创建 */ }
+};
 $('#dlg-cancel').onclick = () => dlg.close();
 function syncTypeUI() {
   const type = new FormData($('#form-new')).get('type');
