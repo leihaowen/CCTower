@@ -1,6 +1,6 @@
-# Agent Workbench — MVP 原型
+# CCTower(Claude Code Tower)
 
-基于 `PRD` 实现的网页化 AI 终端工作台原型:并行运行多个 Claude Code / 终端 session,用 Attention Inbox 回答「哪件事需要我、我该怎么回应」。
+像航空塔台一样调度多个 Claude Code 会话:每个 agent 在自己的 worktree"跑道"上并行干活,塔台(Attention Inbox)只在需要决策、权限或出现意外时召唤你。基于 `PRD` 实现的网页化 AI 终端工作台。
 
 ## 运行
 

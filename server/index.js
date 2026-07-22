@@ -162,5 +162,5 @@ setInterval(() => {
 }, 15_000);
 
 server.listen(PORT, HOST, () => {
-  console.log(`Agent Workbench MVP 已启动: ${BASE}`);
+  console.log(`CCTower 已启动: ${BASE}`);
 });

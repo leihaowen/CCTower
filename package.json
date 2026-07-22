@@ -1,7 +1,7 @@
 {
-  "name": "agent-workbench",
+  "name": "cctower",
   "version": "0.1.0",
-  "description": "Agent Workbench MVP — 可管理的多 Claude Code/终端工作台",
+  "description": "CCTower(Claude Code Tower)— 像航空塔台一样调度多个 Claude Code 会话的网页工作台",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
