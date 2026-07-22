@@ -1,48 +1,86 @@
 # CCTower(Claude Code Tower)
 
-像航空塔台一样调度多个 Claude Code 会话:每个 agent 在自己的 worktree"跑道"上并行干活,塔台(Attention Inbox)只在需要决策、权限或出现意外时召唤你。基于 `PRD` 实现的网页化 AI 终端工作台。
+像航空塔台一样调度多个 Claude Code 会话:每个 agent 在自己的 worktree"跑道"上并行干活,塔台(Attention Inbox)只在需要决策、权限或出现意外时召唤你。
+
+> A web control tower for parallel Claude Code sessions: isolated git-worktree "runways" per agent, an attention inbox that only calls you when a decision, permission, or failure needs a human.
 
 ## 运行
 
 ```bash
-npm install        # 首次
-npm start          # 默认 http://127.0.0.1:7080(可用 CCW_PORT 改端口)
+npm install
+npm start          # http://127.0.0.1:7080
 ```
 
-只绑定 localhost。session 数据存放在 `.ccw-data/`(已 gitignore)。
+依赖:Node.js ≥ 20、git、已登录的 [Claude Code](https://claude.com/claude-code) CLI;建议安装 tmux(见下)。
 
-## 已实现(对照 PRD)
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `CCW_PORT` | `7080` | 监听端口 |
+| `CCW_HOST` | `127.0.0.1` | 监听地址;对外部署必须同时配 `CCW_TOKEN` |
+| `CCW_TOKEN` | 空 | 访问令牌,设置后 API/WS 均需携带(网页会提示输入) |
+| `CCW_ALLOWED_HOSTS` | 空 | 额外允许的 `host:port`(反向代理域名),逗号分隔 |
+| `CCW_DATA_DIR` | `./.ccw-data` | 会话数据、worktree、hooks 配置目录 |
+| `CCW_BACKEND` | `auto` | `auto` 优先 tmux 托管;`pty` 强制直接 PTY |
 
-- **Session 生命周期**:创建 Terminal / Claude Code session(名称、项目目录、初始任务),停止、重启、重命名、归档、删除;浏览器刷新/断线不影响后台 PTY。
-- **Worktree 隔离**:Claude session 默认在 `.ccw-data/worktrees/<id>` 创建独立 worktree + `ccw/<id>` 分支;仓库无 commit 或非 Git 目录时降级为直接运行并写入警告事件;删除 session 时清理 worktree 与分支。
-- **网页终端**:xterm.js,支持输入、复制粘贴、resize、滚动回看、断线缓冲区回放;多标签页只有一个输入控制者,其余只读,可「接管控制」。
-- **Claude 状态采集**:启动 Claude 时注入 `--settings`(Notification / Stop / SubagentStop / SessionEnd / UserPromptSubmit hooks 经 curl 回传)+ `--append-system-prompt`(report_status 协议:agent 在任务开始、阶段完成、阻塞/决策、结束时 POST 结构化 JSON)。不解析终端文字判断状态。
-- **状态机**:executing / verifying / needs_decision / needs_permission / blocked / review_ready / completed / stale / terminal_only / exited,来源标注(系统观测 / Agent 上报 / 用户操作),同一原因通知去重、用户回应后解除。
-- **Attention Inbox**:权限 > 决策 > 阻塞 > 待审四组置顶,卡片悬停约 400ms 展示 Brief(目标/进度/待决策/推荐/下一步/证据/来源);决策选项可直接点击,答案写回原 PTY 并记入决策时间线。
-- **All Sessions**:按活跃/需注意/归档、类型筛选。
-- **Session Workspace**:左 Brief + 元数据 + 回复框 + 手工备注,中终端,右事件时间线与决策历史。
-- **通知**:页面内 toast + 可选浏览器桌面通知(仅 needs_decision / needs_permission / blocked / review_ready 触发)。
-- **Diff 审阅与一键合并**:worktree session 的全部改动(含未提交与新文件)在网页审阅层查看;squash 一键合并回项目当前分支,提交信息自动带 session 名与任务目标;冲突由 `git merge-tree` 预检拦下、主分支分毫不动,可一键让 Claude 在其 worktree 内解决后重试。
-- 普通终端永远是 `terminal_only` / `exited`,report/hook 对其无效(验收标准 7)。
+其他偏好(飞书推送等)在网页"通知设置"中配置,存 `<数据目录>/config.json`。
 
-## MVP 未做(与 PRD 一致或原型简化)
+## 能力一览
 
-- AI 归纳摘要未接模型:「刷新摘要」基于系统观测事件重建(来源如实标注),Agent 上报优先级更高、不被覆盖。
-- 容器级执行隔离、项目视图聚合、手机 Push 等 PRD 明确的后续项。
-- 服务进程重启后 PTY 不可恢复(PRD 只要求浏览器刷新存活),session 会标记为「已退出,可重启」。
+**会话即工作单元**
+- 创建 Terminal / Claude Code session;Claude 会话默认独立 git worktree + 分支,互不污染
+- tmux 托管(专用 socket):**CCTower 服务重启/升级不影响任何运行中的会话**,重启后自动重新接管
+- Claude 会话记录内部 session id,进程重启用 `--resume` 恢复原对话上下文;id 失效自动兜底开新对话
+- 会话自动命名:跟随 Claude 的 OSC 终端标题上报(手动命名优先)
 
-## 开工前决策的取值(PRD §11)
+**网页终端**
+- xterm.js:输入/复制粘贴(选中即复制)/resize/滚动回放;断线 2 秒自动重连,标签页休眠恢复即重连
+- 多标签只有一个输入控制者,其余只读可接管;心跳清除僵尸连接,控制权自动移交
 
-1. 纯本地应用,只绑定 `127.0.0.1`。
-2. 允许在网页终端输入任意 shell 命令(单用户个人工具)。
-3. 复用本机已登录的 Claude Code CLI,不引入平台侧模型调用。
-4. worktree 创建失败时不阻止运行:降级为项目目录直跑,并在事件时间线给出冲突风险警告。
+**状态采集(不解析屏幕文字)**
+1. 确定性信号:进程/退出码 + Claude Code 官方 hooks(Notification / Stop / UserPromptSubmit …)
+2. Agent 上报:内置本地 MCP 工具 `report_status`(预授权,不弹权限),curl 仅兜底
+3. AI 归纳:headless `claude -p` 按需生成结构化 Brief,永不覆盖新鲜的 Agent 上报
 
-## 结构
+**Attention Inbox**
+- 需要权限 > 需要决策 > 阻塞 > 完成待审,四组置顶;其余后台推进
+- 每张卡片是一个迷你终端:真实屏幕缩影(ANSI 彩色、TUI 边框已清洗)+ 状态灯
+  (绿色跑马灯=运行,黄闪=需要你,蓝=就绪,红=意外,绿常亮=待审)
+- 决策选项卡片上直接点;权限请求卡片上直接批准/拒绝;答案写回原会话并记入决策时间线
+- 通知:页面 toast + 桌面通知 + **飞书群机器人推送**(同一原因去重,回应后解除)
 
+**Diff 审阅与一键合并**
+- worktree 全部改动(含未提交/未跟踪)网页审阅;squash 合并回项目分支
+- `git merge-tree` 无副作用冲突预检,主分支分毫不动;冲突可一键交回 Claude 解决后重试
+- 合并成功后一键收尾:停止进程、清理 worktree 与分支、归档(记录保留)
+
+## 架构
+
+```text
+Browser (xterm.js, 无构建)
+   ↕ WebSocket(events / term)+ REST
+CCTower server (Node.js)
+ ├── SessionManager:tmux/PTY 托管、headless xterm 屏幕状态、状态机
+ ├── Claude 集成:hooks --settings、MCP --mcp-config、--append-system-prompt 协议
+ ├── Brief:Agent 上报 > AI 归纳(claude -p) > 系统观测
+ ├── gitReview:diff / merge-tree 预检 / squash 合并
+ └── 存储:.ccw-data(sessions.json / config.json / worktrees / hooks)
+   ↕
+tmux -L ccw(会话跑在这里,服务死了它们还活着)
 ```
-server/index.js       HTTP + WebSocket 路由、REST API
-server/manager.js     Session 管理:PTY、缓冲回放、状态机、Brief、worktree、持久化
-server/claudeSetup.js Claude hooks 设置文件与 report_status 协议提示词
-public/               无构建前端(index.html / app.js / style.css + xterm.js)
+
+## 安全
+
+- 默认只绑定 localhost;API/WS 校验 Host 与 Origin(防 CSRF / DNS rebinding)
+- 可选 `CCW_TOKEN` 认证,常数时间比较;hooks/MCP 回调自动携带
+- 摘要模型输入最小化(近期事件 + 屏幕尾部);摘要文本永不自动执行
+- 终端逐键输入不落盘(可能含密码),仅显式的决策/权限操作记录在案
+
+## 测试
+
+```bash
+npm test    # node:test,16 个用例(状态机 / resume / MCP 协议 / gitReview)
 ```
+
+## License
+
+MIT
