@@ -22,12 +22,13 @@ npm start          # 默认 http://127.0.0.1:7080(可用 CCW_PORT 改端口)
 - **All Sessions**:按活跃/需注意/归档、类型筛选。
 - **Session Workspace**:左 Brief + 元数据 + 回复框 + 手工备注,中终端,右事件时间线与决策历史。
 - **通知**:页面内 toast + 可选浏览器桌面通知(仅 needs_decision / needs_permission / blocked / review_ready 触发)。
+- **Diff 审阅与一键合并**:worktree session 的全部改动(含未提交与新文件)在网页审阅层查看;squash 一键合并回项目当前分支,提交信息自动带 session 名与任务目标;冲突由 `git merge-tree` 预检拦下、主分支分毫不动,可一键让 Claude 在其 worktree 内解决后重试。
 - 普通终端永远是 `terminal_only` / `exited`,report/hook 对其无效(验收标准 7)。
 
 ## MVP 未做(与 PRD 一致或原型简化)
 
 - AI 归纳摘要未接模型:「刷新摘要」基于系统观测事件重建(来源如实标注),Agent 上报优先级更高、不被覆盖。
-- 容器级执行隔离、项目视图聚合、手机 Push、PR 审阅等 PRD 明确的后续项。
+- 容器级执行隔离、项目视图聚合、手机 Push 等 PRD 明确的后续项。
 - 服务进程重启后 PTY 不可恢复(PRD 只要求浏览器刷新存活),session 会标记为「已退出,可重启」。
 
 ## 开工前决策的取值(PRD §11)
