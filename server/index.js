@@ -65,6 +65,12 @@ app.post('/api/sessions', (req, res) => {
   }
 });
 
+// worktree session 的改动全览(含未提交与未跟踪文件)
+app.get('/api/sessions/:id/diff', (req, res) => {
+  try { res.json(manager.diff(req.params.id)); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 app.post('/api/sessions/:id/input', (req, res) => {
   const ok = manager.sendInput(req.params.id, String(req.body.text || ''), { record: req.body.record || null });
   res.json({ delivered: ok });
@@ -83,10 +89,16 @@ app.post('/api/sessions/:id/action', (req, res) => {
     'refresh-brief': () => manager.refreshBrief(id),
     'flag-brief': () => manager.flagBrief(id),
     note: () => manager.setNote(id, value),
+    merge: () => manager.merge(id),
+    'resolve-conflict': () => manager.resolveConflict(id, value || {}),
   };
   if (!ops[op]) return res.status(400).json({ error: `未知操作 ${op}` });
-  ops[op]();
-  res.json({ ok: true });
+  try {
+    const out = ops[op]();
+    res.json(out && typeof out === 'object' ? out : { ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // Claude Code hooks 回调(本机 hook 通过 curl 调用)
