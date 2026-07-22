@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const { execFileSync, execFile } = require('child_process');
 const pty = require('node-pty');
 const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 const { writeHookSettings, protocolPrompt } = require('./claudeSetup');
@@ -503,6 +503,8 @@ class SessionManager {
         } else {
           this._setStatus(s, 'review_ready', '本轮已结束,结果等待你审核');
         }
+        // 回合结束且 agent 没有守约上报时,由 AI 归纳补一份摘要
+        if (!this._agentBriefFresh(s)) this.aiBrief(id).catch(() => { });
         break;
       }
       case 'SubagentStop':
@@ -554,25 +556,31 @@ class SessionManager {
     return true;
   }
 
-  // Rebuild a brief from deterministic facts only (used by 刷新摘要; no model call in MVP).
+  // 刷新摘要:优先 AI 归纳(claude -p);Agent 上报的新鲜摘要不被覆盖;失败退回系统观测重建
   refreshBrief(id) {
     const s = this.sessions.get(id);
     if (!s) return null;
     if (s.type !== 'claude') { this._touch(s); return s; }
-    if (s.brief && s.brief.source === 'agent_reported') {
-      // Agent 上报优先级高于归纳,只更新时间戳观感,不覆盖内容
+    if (this._agentBriefFresh(s)) {
       this._event(s, 'brief', '刷新请求:保留 Agent 上报内容(优先级更高)');
       this._touch(s);
       return s;
     }
+    this.aiBrief(id, { manual: true }).then((ok) => { if (!ok) this._observedBrief(s); });
+    return s;
+  }
+
+  _agentBriefFresh(s) {
+    return s.brief && s.brief.source === 'agent_reported'
+      && Date.now() - Date.parse(s.brief.updated_at) < 5 * 60_000;
+  }
+
+  _observedBrief(s) {
     const recent = s.events.slice(-6).map((e) => e.text);
     s.brief = {
-      objective: s.command || '(未提供初始任务说明)',
+      objective: (s.brief && s.brief.objective) || s.command || '(未提供初始任务说明)',
       phase: s.status === 'verifying' ? 'verifying' : 'executing',
-      progress: null,
-      completed: [],
-      blocker: null,
-      decision: null,
+      progress: null, completed: [], blocker: null, decision: null,
       next_action: '进入终端查看详情',
       evidence: recent,
       source: 'observed',
@@ -580,7 +588,69 @@ class SessionManager {
     };
     this._event(s, 'brief', '根据系统观测重建摘要');
     this._touch(s);
-    return s;
+  }
+
+  // AI 归纳(PRD 状态来源第三层):headless claude -p 读取近期事件与屏幕尾部,产出结构化 Brief。
+  // 只在回合结束或手动刷新时调用,全局串行,60 秒节流,不覆盖新鲜的 Agent 上报。
+  async aiBrief(id, { manual = false } = {}) {
+    const s = this.sessions.get(id);
+    if (!s || s.type !== 'claude') return false;
+    const rt = this.runtime.get(id);
+    const now = Date.now();
+    if (!manual && rt && rt.aiBriefAt && now - rt.aiBriefAt < 60_000) return false;
+    if (this._agentBriefFresh(s)) return false;
+    if (this._aiBusy) return false;
+    this._aiBusy = true;
+    if (rt) rt.aiBriefAt = now;
+    this._event(s, 'brief', '正在调用模型生成 AI 归纳摘要…', 'AI 归纳');
+    this._touch(s);
+    try {
+      const material = {
+        任务初始说明: s.command || '(无)',
+        当前状态: `${s.status} — ${s.statusLine}`,
+        近期事件: s.events.slice(-15).map((e) => `${e.at.slice(11, 19)} [${e.kind}] ${e.text}`),
+        终端画面尾部: String(s.tailCache || '').slice(-1500),
+        近期决策: s.decisions.slice(-3),
+      };
+      const prompt = [
+        '你是 CCTower 的会话摘要引擎。根据以下某个 Claude Code 会话的观测材料,生成一份结构化工作摘要。',
+        '只输出一个 JSON 对象,不要任何其他文字。字段:',
+        '{"objective": "用户目标(一句)", "phase": "executing|verifying|waiting|review", "progress": {"done": 整数, "total": 整数} 或 null, "completed": ["已完成事项,最多4条"], "blocker": "阻塞原因或 null", "decision": null, "next_action": "建议下一步(可执行的一句)", "evidence": ["依据,最多3条"]}',
+        '规则:只陈述材料中有依据的内容,不要编造进度;不确定就用 null;中文;每条不超过40字。',
+        '材料:',
+        JSON.stringify(material, null, 1),
+      ].join('\n');
+      const stdout = await new Promise((resolve, reject) => {
+        execFile('claude', ['-p', prompt, '--output-format', 'json'], {
+          env: this._cleanEnv(), cwd: os.tmpdir(), timeout: 90_000, maxBuffer: 4_000_000,
+        }, (err, out) => (err ? reject(err) : resolve(out)));
+      });
+      const text = String(JSON.parse(stdout).result || '');
+      const b = JSON.parse((text.match(/\{[\s\S]*\}/) || ['{}'])[0]);
+      if (!b.objective && !b.next_action) throw new Error('模型未返回有效摘要');
+      s.brief = {
+        objective: b.objective || s.command || '',
+        phase: ['executing', 'verifying', 'waiting', 'review'].includes(b.phase) ? b.phase : 'executing',
+        progress: b.progress && Number.isFinite(b.progress.total) ? b.progress : null,
+        completed: Array.isArray(b.completed) ? b.completed.slice(0, 4) : [],
+        blocker: b.blocker || null,
+        decision: null, // AI 不代替 agent 提决策问题
+        next_action: b.next_action || '',
+        evidence: Array.isArray(b.evidence) ? b.evidence.slice(0, 3) : [],
+        source: 'ai_inferred',
+        updated_at: new Date().toISOString(),
+      };
+      s.briefFlagged = false;
+      this._event(s, 'brief', 'AI 归纳摘要已更新', 'AI 归纳');
+      this._touch(s);
+      return true;
+    } catch (e) {
+      this._event(s, 'warning', `AI 归纳失败(${String(e.message).split('\n')[0].slice(0, 80)})`, 'AI 归纳');
+      this._touch(s);
+      return false;
+    } finally {
+      this._aiBusy = false;
+    }
   }
 
   flagBrief(id) {
