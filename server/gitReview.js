@@ -24,8 +24,15 @@ function targetBranchOf(projectDir) {
   catch { throw new Error('项目目录处于 detached HEAD,请先 checkout 到分支再操作'); }
 }
 
+// 分支名可用 `git branch -- -foo` 造出以 - 开头的形态,直接拼进 argv 会被当成选项解析
+function assertSafeRef(name, label) {
+  if (!name || name.startsWith('-')) throw new Error(`${label}「${name}」以 - 开头或为空,拒绝操作`);
+}
+
 function computeDiff({ projectDir, worktree, branch }) {
   const target = targetBranchOf(projectDir);
+  assertSafeRef(target, '目标分支');
+  assertSafeRef(branch, 'session 分支');
   let base;
   try { base = git(['merge-base', target, 'HEAD'], worktree).trim(); }
   catch { throw new Error(`分支 ${branch} 与 ${target} 没有共同祖先,无法对比`); }
@@ -63,6 +70,8 @@ function computeDiff({ projectDir, worktree, branch }) {
 
 function squashMerge({ projectDir, worktree, branch, message }) {
   const target = targetBranchOf(projectDir);
+  assertSafeRef(target, '目标分支');
+  assertSafeRef(branch, 'session 分支');
 
   // 用户自己的未提交改动不能代为处理;untracked 放行,若与合并内容碰撞由 git 自身安全中止
   const dirtyTracked = git(['status', '--porcelain'], projectDir).split('\n')

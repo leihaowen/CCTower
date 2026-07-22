@@ -128,3 +128,10 @@ test('squashMerge:projectDir detached HEAD 报错', () => {
   run(['checkout', '--detach'], fx.projectDir);
   assert.throws(() => squashMerge({ ...fx, message: 'm' }), /detached HEAD/);
 });
+
+test('安全:以 - 开头的分支名被拒绝,不会进入 git argv', () => {
+  const fx = makeFixture();
+  run(['symbolic-ref', 'HEAD', 'refs/heads/-evil'], fx.projectDir);
+  assert.throws(() => computeDiff(fx), /以 - 开头/);
+  assert.throws(() => squashMerge({ ...fx, message: 'm' }), /以 - 开头/);
+});
