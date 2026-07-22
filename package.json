@@ -1,0 +1,20 @@
+{
+  "name": "agent-workbench",
+  "version": "0.1.0",
+  "description": "Agent Workbench MVP — 可管理的多 Claude Code/终端工作台",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "express": "^5.2.1",
+    "node-pty": "^1.1.0",
+    "ws": "^8.21.1"
+  }
+}

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Workbench</title>
+<link rel="stylesheet" href="/vendor/xterm.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="wordmark">AGENT<br>WORKBENCH</div>
+    <nav>
+      <button class="nav-item" data-view="inbox">
+        <span class="nav-label">Attention Inbox</span>
+        <span class="nav-count" id="inbox-count">0</span>
+      </button>
+      <button class="nav-item" data-view="sessions">
+        <span class="nav-label">All Sessions</span>
+        <span class="nav-count" id="sessions-count">0</span>
+      </button>
+    </nav>
+    <div class="sidebar-foot">
+      <button id="btn-new" class="btn-primary">＋ 新建 Session</button>
+      <button id="btn-notify" class="btn-ghost" title="开启浏览器桌面通知">开启桌面通知</button>
+    </div>
+  </aside>
+
+  <main id="main"></main>
+</div>
+
+<div id="popover" class="brief-popover" hidden></div>
+<div id="toasts"></div>
+
+<dialog id="dlg-new">
+  <form id="form-new" method="dialog">
+    <h2>新建 Session</h2>
+    <div class="type-pick">
+      <label class="type-opt"><input type="radio" name="type" value="claude" checked>
+        <div><strong>Claude Code</strong><span>深度集成:状态采集、摘要、决策回传</span></div></label>
+      <label class="type-opt"><input type="radio" name="type" value="terminal">
+        <div><strong>Terminal</strong><span>普通 shell,只做会话管理与基础观测</span></div></label>
+    </div>
+    <label class="field">名称<input name="name" placeholder="例如:修复登录 Bug"></label>
+    <label class="field">项目目录<input name="projectDir" placeholder="/path/to/project"></label>
+    <label class="field" id="field-cmd">初始任务 / 命令<textarea name="command" rows="3" placeholder="给 Claude 的任务描述,或终端要执行的命令"></textarea></label>
+    <label class="check" id="field-isolate"><input type="checkbox" name="isolate" checked>
+      使用独立 Git worktree 隔离(推荐)<em>关闭后多个 session 将写入同一份工作副本,可能互相冲突</em></label>
+    <div class="dlg-actions">
+      <button type="button" id="dlg-cancel" class="btn-ghost">取消</button>
+      <button type="submit" class="btn-primary">创建</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
