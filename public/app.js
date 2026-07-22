@@ -341,6 +341,9 @@ function renderWorkspace() {
     theme: { background: '#0e1013', foreground: '#d6dae2', cursor: '#e5a83b', selectionBackground: '#3a4150' },
     scrollback: 8000,
     allowProposedApi: true,
+    // TUI(如 Claude Code)开启鼠标捕获后,普通拖选被程序拦走;
+    // Mac 上按住 Option(⌥)拖选、其他平台按住 Shift 拖选可强制建立选区
+    macOptionClickForcesSelection: true,
   });
   fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
