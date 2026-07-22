@@ -92,6 +92,8 @@ class SessionManager {
     const s = {
       id,
       name: name || (type === 'claude' ? `Claude ${id.slice(0, 4)}` : `Terminal ${id.slice(0, 4)}`),
+      customNamed: !!name, // 用户起过名则不被自动命名覆盖
+      termTitle: '',
       type, // 'terminal' | 'claude'
       projectDir,
       cwd: projectDir,
@@ -167,6 +169,9 @@ class SessionManager {
     const head = new HeadlessTerminal({ cols: 120, rows: 32, scrollback: 400, allowProposedApi: true });
     const rt = { pty: p, head, buffer: '', clients: new Set(), controller: null, expectExit: false, booted: false, lastTail: '' };
     this.runtime.set(s.id, rt);
+    // Claude Code 通过 OSC 0/2 持续上报会话主题(zellij 等复用器的标签名同源);
+    // headless xterm 负责解析,含跨 chunk 拼接
+    head.onTitleChange((title) => this._onTitle(s, title));
     s.alive = true;
     s.exitCode = null;
 
@@ -232,7 +237,11 @@ class SessionManager {
     ws.on('message', (raw) => {
       let m; try { m = JSON.parse(raw); } catch { return; }
       if (m.type === 'input') {
-        if (rt.controller === ws && s.alive) rt.pty.write(m.data);
+        if (rt.controller === ws && s.alive) {
+          rt.pty.write(m.data);
+          // 只记录"发生过交互"用于 stale 判定,不记录击键内容(可能含敏感信息)
+          if (m.data.includes('\r') || m.data.includes('\n')) s.lastSemanticAt = new Date().toISOString();
+        }
       } else if (m.type === 'resize') {
         if (rt.controller === ws && s.alive) {
           try { rt.pty.resize(m.cols, m.rows); } catch { }
@@ -279,6 +288,20 @@ class SessionManager {
       this._touch(s);
     }
     return true;
+  }
+
+  // 终端标题变化:记录;Claude 会话且用户未手动命名时,自动跟随 Claude 的会话命名
+  _onTitle(s, title) {
+    const clean = String(title || '').replace(/^[\s✳✶✻·*∴◐◑◒◓-]+/, '').trim().slice(0, 60);
+    if (!clean || clean === s.termTitle) return;
+    s.termTitle = clean;
+    if (s.type === 'claude' && !s.customNamed && !/^claude$/i.test(clean)) {
+      if (s.name !== clean) {
+        this._event(s, 'lifecycle', `会话自动命名:${clean}(来自 Claude 标题上报)`);
+        s.name = clean;
+      }
+    }
+    this._touch(s);
   }
 
   // ---------- claude signals ----------
@@ -438,6 +461,7 @@ class SessionManager {
     const s = this.sessions.get(id);
     if (!s || !name) return;
     s.name = String(name).slice(0, 60);
+    s.customNamed = true; // 手动命名后不再被自动命名覆盖
     this._touch(s);
   }
 

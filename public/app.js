@@ -461,6 +461,8 @@ function renderWorkspace() {
 
 function updatePanels(s) {
   const st = STATUS[s.status];
+  const nameEl = $('#ws-name');
+  if (nameEl && document.activeElement !== nameEl && nameEl.value !== s.name) nameEl.value = s.name;
   const pill = $('#ws-pill');
   if (pill) { pill.style.setProperty('--pc', st.color); pill.innerHTML = `<span class="dot ${st.pulse && s.alive ? 'pulse' : ''}"></span>${st.label}`; }
   const meta = $('#ws-meta');
