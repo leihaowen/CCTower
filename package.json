@@ -4,7 +4,8 @@
   "description": "Agent Workbench MVP — 可管理的多 Claude Code/终端工作台",
   "main": "server/index.js",
   "scripts": {
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "test": "node --test test/manager.test.js"
   },
   "keywords": [],
   "author": "",

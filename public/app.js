@@ -483,6 +483,7 @@ function updatePanels(s) {
       <dt>类型</dt><dd>${s.type === 'claude' ? 'Claude Code' : 'Terminal'}</dd>
       <dt>项目</dt><dd>${esc(s.projectDir)}</dd>
       ${s.worktree ? `<dt>worktree</dt><dd>${esc(s.worktree)}</dd><dt>分支</dt><dd>${esc(s.branch)}</dd>` : '<dt>隔离</dt><dd>无(直接在项目目录运行)</dd>'}
+      ${s.claudeSessionId ? `<dt>对话</dt><dd>可恢复(重启时 --resume ${esc(s.claudeSessionId.slice(0, 8))}…)</dd>` : ''}
       <dt>创建</dt><dd>${new Date(s.createdAt).toLocaleString()}</dd>
       <dt>最后活动</dt><dd>${ago(s.lastActivityAt)}</dd>
       ${s.exitCode !== null ? `<dt>exit</dt><dd>${s.exitCode}</dd>` : ''}
