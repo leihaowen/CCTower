@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - 零新依赖:不新增任何 npm 包、不引入前端库。
-- 所有用户可见文案为中文,风格与现有代码一致(逗号用全角,冒号用全角)。
+- 所有用户可见文案为中文,标点风格与现有代码一致(半角逗号/冒号,同 manager.js 现有文案)。
 - 合并失败/冲突时目标分支必须分毫不动;预检用 `git merge-tree --write-tree`(纯 plumbing)。
 - 仅 `s.worktree` 非空的 session 可用;其他一律 400。
 - diff 文本超过 1MB 截断并置 `truncated: true`,`files` 列表始终完整。
