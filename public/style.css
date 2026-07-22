@@ -124,6 +124,12 @@ nav { display: flex; flex-direction: column; gap: 4px; }
 }
 .mini-term::-webkit-scrollbar { width: 6px; height: 6px; }
 .mini-term::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+/* ANSI 16 色(按深色底调校)与粗体 */
+.tb { font-weight: 700; }
+.tc-0 { color: #4a5160; } .tc-1 { color: #f0665f; } .tc-2 { color: #58c98b; } .tc-3 { color: #dcb44d; }
+.tc-4 { color: #5aa2f0; } .tc-5 { color: #c792ea; } .tc-6 { color: #57c7d4; } .tc-7 { color: #c3c9d4; }
+.tc-8 { color: #6b7280; } .tc-9 { color: #ff8a80; } .tc-10 { color: #7ce8ac; } .tc-11 { color: #ffd766; }
+.tc-12 { color: #82bfff; } .tc-13 { color: #e0b0ff; } .tc-14 { color: #7fe3f0; } .tc-15 { color: #f2f4f8; }
 
 .card {
   position: relative; background: var(--panel); border: 1px solid var(--border);

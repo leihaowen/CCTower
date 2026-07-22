@@ -201,7 +201,7 @@ server.on('upgrade', (req, socket, head) => {
 
 // 迷你终端画面推送:2 秒一次,只推有变化的 session
 setInterval(() => {
-  for (const u of manager.collectTails()) broadcast({ type: 'tail', id: u.id, tail: u.tail });
+  for (const u of manager.collectTails()) broadcast({ type: 'tail', id: u.id, tail: u.tail, html: u.html });
 }, 2000);
 
 // 心跳保活:上一轮未回 pong 的视为死连接并 terminate(浏览器自动回 pong)

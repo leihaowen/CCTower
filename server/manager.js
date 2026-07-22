@@ -830,16 +830,19 @@ class SessionManager {
     for (const [id, rt] of this.runtime) {
       const s = this.sessions.get(id);
       if (!s || !s.alive) continue;
-      const tail = this._tailOf(rt);
-      if (tail !== rt.lastTail) {
-        rt.lastTail = tail;
-        s.tailCache = tail;
-        out.push({ id, tail });
+      const { plain, html } = this._tailOf(rt);
+      if (plain !== rt.lastTail) {
+        rt.lastTail = plain;
+        s.tailCache = plain; // 纯文本:AI 归纳材料 + 变化比对
+        s.tailHtml = html; // 着色 HTML:迷你终端展示(服务端已转义)
+        out.push({ id, tail: plain, html });
       }
     }
     if (out.length) this._save();
     return out;
   }
+
+  _escHtml(t) { return String(t).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 
   _tailOf(rt) {
     // 纯边框/分隔线行(TUI 包装盒)对窄卡片是噪音,整行剔除
@@ -847,21 +850,63 @@ class SessionManager {
     try {
       const buf = rt.head.buffer.active;
       const total = buf.length;
-      const cleaned = [];
+      const cleaned = []; // { plain, segs: [{ text, cls, rgb }] }
       for (let i = Math.max(0, total - 60); i < total; i++) {
         const line = buf.getLine(i);
-        let t = line ? line.translateToString(true) : '';
-        t = t.replace(/^[│┃║]\s?/, '').replace(/\s?[│┃║]\s*$/, ''); // 去左右包边
-        t = t.replace(/[─━═]{3,}/g, ' ').replace(/ {4,}/g, '   ').trimEnd();
-        if (BOX_ONLY.test(t)) t = '';
+        if (!line) continue;
+        // 逐格提取文本与前景色,合并同色连续段
+        const segs = [];
+        for (let x = 0; x < line.length; x++) {
+          const cell = line.getCell(x);
+          if (!cell) break;
+          const ch = cell.getChars() || (cell.getWidth() ? ' ' : '');
+          if (!ch) continue;
+          let cls = '', rgb = '';
+          if (cell.isFgPalette()) {
+            const n = cell.getFgColor();
+            if (n >= 0 && n < 16) cls = `tc-${n}`;
+          } else if (cell.isFgRGB()) {
+            const v = cell.getFgColor();
+            rgb = `${(v >> 16) & 255},${(v >> 8) & 255},${v & 255}`;
+          }
+          if (cell.isBold()) cls = (cls ? cls + ' ' : '') + 'tb';
+          const last = segs[segs.length - 1];
+          if (last && last.cls === cls && last.rgb === rgb) last.text += ch;
+          else segs.push({ text: ch, cls, rgb });
+        }
+        // 行级清洗在纯文本上决策(去包边、折叠长横线/大段空白),再同步裁剪段
+        for (const g of segs) g.text = g.text.replace(/[─━═]{3,}/g, ' ').replace(/ {4,}/g, '   ');
+        let plain = segs.map((g) => g.text).join('').trimEnd();
+        const lead = (plain.match(/^[│┃║]\s?/) || [''])[0].length;
+        plain = plain.slice(lead).replace(/\s?[│┃║]\s*$/, '').trimEnd();
+        if (BOX_ONLY.test(plain)) plain = '';
         // 连续空行折叠为一行
-        if (!t && (!cleaned.length || !cleaned[cleaned.length - 1])) continue;
-        cleaned.push(t);
+        if (!plain && (!cleaned.length || !cleaned[cleaned.length - 1].plain)) continue;
+        let toDrop = lead;
+        let budget = plain.length;
+        const kept = [];
+        for (const g of segs) {
+          let t = g.text;
+          if (toDrop > 0) { const d = Math.min(toDrop, t.length); t = t.slice(d); toDrop -= d; }
+          if (!t || budget <= 0) continue;
+          if (t.length > budget) t = t.slice(0, budget);
+          budget -= t.length;
+          kept.push({ text: t, cls: g.cls, rgb: g.rgb });
+        }
+        cleaned.push({ plain, segs: plain ? kept : [] });
       }
-      while (cleaned.length && !cleaned[cleaned.length - 1]) cleaned.pop();
-      return cleaned.slice(-14).join('\n');
+      while (cleaned.length && !cleaned[cleaned.length - 1].plain) cleaned.pop();
+      const lines = cleaned.slice(-14);
+      return {
+        plain: lines.map((l) => l.plain).join('\n'),
+        html: lines.map((l) => l.segs.map((g) => {
+          const t = this._escHtml(g.text);
+          if (!g.cls && !g.rgb) return t;
+          return `<span${g.cls ? ` class="${g.cls}"` : ''}${g.rgb ? ` style="color:rgb(${g.rgb})"` : ''}>${t}</span>`;
+        }).join('')).join('\n'),
+      };
     } catch {
-      return rt.lastTail;
+      return { plain: rt.lastTail || '', html: this._escHtml(rt.lastTail || '') };
     }
   }
 

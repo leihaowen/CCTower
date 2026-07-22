@@ -76,9 +76,11 @@ function connectEvents() {
       render();
     } else if (m.type === 'tail') {
       const s = state.sessions.get(m.id);
-      if (s) s.tailCache = m.tail;
+      if (s) { s.tailCache = m.tail; s.tailHtml = m.html; }
       document.querySelectorAll(`.mini-term[data-id="${m.id}"]`).forEach((el) => {
-        el.textContent = m.tail;
+        // html 由服务端逐段转义生成,只含着色 span
+        if (m.html !== undefined) el.innerHTML = m.html;
+        else el.textContent = m.tail;
         el.scrollTop = el.scrollHeight;
       });
     } else if (m.type === 'notify') {
@@ -206,7 +208,7 @@ function cardHTML(s) {
       <span class="status-pill" style="--pc:${st.color}">${st.label}</span>
       <span class="card-time" title="进入当前状态的时长">${ago(s.statusChangedAt || s.lastActivityAt)}</span>
     </div>
-    <pre class="mini-term" data-id="${s.id}">${esc(s.tailCache || (s.alive ? '(等待画面…)' : '(未在运行)'))}</pre>
+    <pre class="mini-term" data-id="${s.id}">${s.tailHtml !== undefined && s.tailHtml !== null ? s.tailHtml : esc(s.tailCache || '')}${s.tailHtml || s.tailCache ? '' : esc(s.alive ? '(等待画面…)' : '(未在运行)')}</pre>
     <div class="card-line">${esc(s.statusLine)}<span class="src">${s.brief ? SRC_LABEL[s.brief.source] : '系统观测'}</span></div>
     ${s.status === 'review_ready' && s.worktree ? `<div class="card-review"><button class="review-btn">审阅改动</button></div>` : ''}
     ${d && d.question ? `<div class="card-decision">
