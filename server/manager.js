@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const { execFileSync, execFile } = require('child_process');
 const pty = require('node-pty');
 const { Terminal: HeadlessTerminal } = require('@xterm/headless');
-const { writeHookSettings, protocolPrompt } = require('./claudeSetup');
+const { writeHookSettings, writeMcpConfig, protocolPrompt } = require('./claudeSetup');
 const { computeDiff, squashMerge } = require('./gitReview');
 
 const ATTENTION = new Set(['needs_decision', 'needs_permission', 'blocked', 'review_ready']);
@@ -208,8 +208,11 @@ class SessionManager {
 
   _buildCommand(s) {
     if (s.type === 'claude') {
-      const hooksFile = writeHookSettings(path.join(this.dataDir, 'hooks'), this.baseUrl, s.id);
-      const argv = ['claude', '--settings', hooksFile, '--append-system-prompt', protocolPrompt(this.baseUrl, s.id)];
+      const hooksDir = path.join(this.dataDir, 'hooks');
+      const hooksFile = writeHookSettings(hooksDir, this.baseUrl, s.id);
+      const mcpFile = writeMcpConfig(hooksDir, this.baseUrl, s.id);
+      const argv = ['claude', '--settings', hooksFile, '--mcp-config', mcpFile,
+        '--append-system-prompt', protocolPrompt(this.baseUrl, s.id)];
       if (s.claudeSessionId) {
         // 重启走 resume:恢复原对话上下文,初始命令已在原对话里,不重发
         argv.push('--resume', s.claudeSessionId);
