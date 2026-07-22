@@ -45,10 +45,22 @@ function ago(iso) {
   return `${(d / 86400) | 0} 天前`;
 }
 function dirTail(p) { const parts = (p || '').split('/').filter(Boolean); return parts.slice(-2).join('/'); }
+const authToken = () => localStorage.getItem('ccwToken') || '';
+const authHeaders = () => (authToken() ? { 'X-CCW-Token': authToken() } : {});
+const wsAuth = () => (authToken() ? `?token=${encodeURIComponent(authToken())}` : '');
 async function api(path, body) {
-  const res = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
+  const res = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401) { promptToken(); throw new Error('unauthorized'); }
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
   return res.json();
+}
+function promptToken() {
+  const t = prompt('此 CCTower 已开启访问令牌(CCW_TOKEN),请输入:');
+  if (t !== null) { localStorage.setItem('ccwToken', t.trim()); location.reload(); }
 }
 const act = (id, op, value) => api(`/api/sessions/${id}/action`, { op, value });
 
@@ -61,7 +73,7 @@ async function readClipboard() {
 let eventsWs = null;
 function connectEvents() {
   if (eventsWs && (eventsWs.readyState === 0 || eventsWs.readyState === 1)) return;
-  const ws = new WebSocket(`ws://${location.host}/ws/events`);
+  const ws = new WebSocket(`ws://${location.host}/ws/events${wsAuth()}`);
   eventsWs = ws;
   ws.onopen = () => $('#connbar').hidden = true;
   ws.onmessage = (e) => {
@@ -579,7 +591,7 @@ function renderWorkspace() {
   let controller = false;
   const connectTerm = (replay) => {
     if (replay && term) term.reset(); // 重连时服务端会整体回放缓冲区,先清屏避免重复
-    termWs = new WebSocket(`ws://${location.host}/ws/term/${s.id}`);
+    termWs = new WebSocket(`ws://${location.host}/ws/term/${s.id}${wsAuth()}`);
     termWs.onmessage = (e) => {
       const m = JSON.parse(e.data);
       if (m.type === 'data') term.write(m.data);
@@ -742,5 +754,8 @@ $('#btn-notify').onclick = async () => {
   toast('桌面通知', p === 'granted' ? '已开启:需要决策/权限/阻塞时会提醒你' : '未授权,仅使用页面内提醒');
 };
 setInterval(() => { if (state.view !== 'workspace') render(); }, 30_000);
-connectEvents();
-render();
+// 若服务端开启 token 认证,先校验令牌再建立连接(WS 被拒时只会静默断开,无法提示)
+fetch('/api/health', { headers: authHeaders() }).then((r) => {
+  if (r.status === 401) promptToken();
+  else { connectEvents(); render(); }
+}).catch(() => { connectEvents(); render(); });

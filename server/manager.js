@@ -14,9 +14,10 @@ const BUFFER_CAP = 200_000;
 const STALE_MS = 10 * 60 * 1000;
 
 class SessionManager {
-  constructor({ dataDir, baseUrl, onChange, onNotify, backend }) {
+  constructor({ dataDir, baseUrl, onChange, onNotify, backend, authToken }) {
     this.dataDir = dataDir;
     this.baseUrl = baseUrl;
+    this.authToken = authToken || '';
     this.backend = backend || process.env.CCW_BACKEND || 'auto'; // 'auto'(优先 tmux)| 'pty'
     this.onChange = onChange; // (session) => void, broadcast state
     this.onNotify = onNotify; // (session, reason) => void, push notification
@@ -209,8 +210,8 @@ class SessionManager {
   _buildCommand(s) {
     if (s.type === 'claude') {
       const hooksDir = path.join(this.dataDir, 'hooks');
-      const hooksFile = writeHookSettings(hooksDir, this.baseUrl, s.id);
-      const mcpFile = writeMcpConfig(hooksDir, this.baseUrl, s.id);
+      const hooksFile = writeHookSettings(hooksDir, this.baseUrl, s.id, this.authToken);
+      const mcpFile = writeMcpConfig(hooksDir, this.baseUrl, s.id, this.authToken);
       const argv = ['claude', '--settings', hooksFile, '--mcp-config', mcpFile,
         '--append-system-prompt', protocolPrompt(this.baseUrl, s.id)];
       if (s.claudeSessionId) {
@@ -246,7 +247,7 @@ class SessionManager {
         '#!/usr/bin/env bash',
         // tmux server 继承了 CCTower 的环境,这里再剔除一次 Claude 标记
         `unset $(compgen -v | grep -E '^CLAUDECODE$|^CLAUDE_CODE_') 2>/dev/null || true`,
-        `export CCW_SESSION_ID=${q(s.id)} CCW_BASE_URL=${q(this.baseUrl)}`,
+        `export CCW_SESSION_ID=${q(s.id)} CCW_BASE_URL=${q(this.baseUrl)}${this.authToken ? ` CCW_TOKEN=${q(this.authToken)}` : ''}`,
         `cd ${q(s.cwd)} || exit 97`,
         `rm -f ${q(this._exitFile(s.id))}`,
         argv.map(q).join(' '),
@@ -264,6 +265,7 @@ class SessionManager {
       const env = this._cleanEnv();
       env.CCW_SESSION_ID = s.id;
       env.CCW_BASE_URL = this.baseUrl;
+      if (this.authToken) env.CCW_TOKEN = this.authToken;
       p = pty.spawn(argv[0], argv.slice(1), { name: 'xterm-256color', cols: 120, rows: 32, cwd: s.cwd, env });
     }
     this._wire(s, p, { usedResume: argv.includes('--resume') });

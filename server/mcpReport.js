@@ -60,9 +60,11 @@ rl.on('line', async (line) => {
   } else if (method === 'tools/call') {
     let text;
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (process.env.CCW_TOKEN) headers['X-CCW-Token'] = process.env.CCW_TOKEN;
       const r = await fetch(`${BASE}/api/report/${SID}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify((params && params.arguments) || {}),
       });
       const j = await r.json();
