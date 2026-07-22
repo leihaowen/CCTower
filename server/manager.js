@@ -163,8 +163,8 @@ class SessionManager {
     const p = pty.spawn(file, args, {
       name: 'xterm-256color', cols: 120, rows: 32, cwd: s.cwd, env,
     });
-    // headless xterm 维护真实屏幕状态,供列表页迷你终端展示
-    const head = new HeadlessTerminal({ cols: 110, rows: 32, scrollback: 400, allowProposedApi: true });
+    // headless xterm 维护真实屏幕状态,供列表页迷你终端展示;列数必须与 PTY 一致,否则光标定位错乱
+    const head = new HeadlessTerminal({ cols: 120, rows: 32, scrollback: 400, allowProposedApi: true });
     const rt = { pty: p, head, buffer: '', clients: new Set(), controller: null, expectExit: false, booted: false, lastTail: '' };
     this.runtime.set(s.id, rt);
     s.alive = true;
@@ -234,7 +234,10 @@ class SessionManager {
       if (m.type === 'input') {
         if (rt.controller === ws && s.alive) rt.pty.write(m.data);
       } else if (m.type === 'resize') {
-        if (rt.controller === ws && s.alive) { try { rt.pty.resize(m.cols, m.rows); } catch { } }
+        if (rt.controller === ws && s.alive) {
+          try { rt.pty.resize(m.cols, m.rows); } catch { }
+          try { rt.head.resize(m.cols, m.rows); } catch { } // 与 PTY 保持同尺寸
+        }
       } else if (m.type === 'take-control') {
         const prev = rt.controller;
         rt.controller = ws;
@@ -495,16 +498,24 @@ class SessionManager {
   }
 
   _tailOf(rt) {
+    // 纯边框/分隔线行(TUI 包装盒)对窄卡片是噪音,整行剔除
+    const BOX_ONLY = /^[\s─━═╌╍┄┅┈┉╭╮╰╯┌┐└┘├┤┬┴┼│┃║▔▁▏▕\-_=~·.]*$/;
     try {
       const buf = rt.head.buffer.active;
       const total = buf.length;
-      const lines = [];
-      for (let i = Math.max(0, total - 40); i < total; i++) {
+      const cleaned = [];
+      for (let i = Math.max(0, total - 60); i < total; i++) {
         const line = buf.getLine(i);
-        lines.push(line ? line.translateToString(true) : '');
+        let t = line ? line.translateToString(true) : '';
+        t = t.replace(/^[│┃║]\s?/, '').replace(/\s?[│┃║]\s*$/, ''); // 去左右包边
+        t = t.replace(/[─━═]{3,}/g, ' ').replace(/ {4,}/g, '   ').trimEnd();
+        if (BOX_ONLY.test(t)) t = '';
+        // 连续空行折叠为一行
+        if (!t && (!cleaned.length || !cleaned[cleaned.length - 1])) continue;
+        cleaned.push(t);
       }
-      while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
-      return lines.slice(-16).join('\n');
+      while (cleaned.length && !cleaned[cleaned.length - 1]) cleaned.pop();
+      return cleaned.slice(-14).join('\n');
     } catch {
       return rt.lastTail;
     }

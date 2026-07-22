@@ -119,7 +119,8 @@ nav { display: flex; flex-direction: column; gap: 4px; }
 .mini-term {
   font-family: var(--mono); font-size: 10.5px; line-height: 1.4; color: #a9b1bd;
   background: #0e1013; border: 1px solid var(--border); border-radius: 8px;
-  padding: 8px 10px; height: 148px; overflow: auto; white-space: pre; margin-top: 9px;
+  padding: 8px 10px; height: 148px; overflow-y: auto; overflow-x: hidden;
+  white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 9px;
 }
 .mini-term::-webkit-scrollbar { width: 6px; height: 6px; }
 .mini-term::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
