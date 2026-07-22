@@ -12,7 +12,7 @@ const PORT = Number(process.env.CCW_PORT || 7080);
 const HOST = process.env.CCW_HOST || '127.0.0.1';
 const BASE = `http://127.0.0.1:${PORT}`; // hooks/report 回调恒走本机回环
 const DATA_DIR = process.env.CCW_DATA_DIR || path.join(__dirname, '..', '.ccw-data');
-fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -31,18 +31,24 @@ function isLocalRequest(headers) {
   return true;
 }
 // 可选认证:设置 CCW_TOKEN(或 config.json 的 authToken)后,API 与 WS 都要求令牌。
-// 为绑定非 localhost / 反向代理部署准备;不设置则维持纯本机模式。
-function tokenOf(req, url) {
-  return req.headers['x-ccw-token'] || (url ? url.searchParams.get('token') : null) || '';
+// WS 经 Sec-WebSocket-Protocol 子协议携带(base64url),绝不放进 URL(避免进代理日志/浏览器历史)。
+function wsTokenFrom(req) {
+  const raw = req.headers['sec-websocket-protocol'] || '';
+  for (const p of raw.split(',').map((x) => x.trim())) {
+    if (p.startsWith('ccw.token.')) {
+      try { return Buffer.from(p.slice(10), 'base64url').toString('utf8'); } catch { return ''; }
+    }
+  }
+  return '';
 }
-function authOk(req, url) {
+function authOk(req) {
   if (!AUTH_TOKEN) return true;
-  const t = tokenOf(req, url);
+  const t = req.headers['x-ccw-token'] || wsTokenFrom(req);
   return t.length === AUTH_TOKEN.length && require('crypto').timingSafeEqual(Buffer.from(t), Buffer.from(AUTH_TOKEN));
 }
 app.use('/api', (req, res, next) => {
   if (!isLocalRequest(req.headers)) return res.status(403).json({ error: 'forbidden' });
-  if (!authOk(req, new URL(req.originalUrl, BASE))) return res.status(401).json({ error: 'unauthorized' });
+  if (!authOk(req)) return res.status(401).json({ error: 'unauthorized' });
   next();
 });
 
@@ -58,7 +64,7 @@ const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 let config = { feishuWebhook: '', notifyReviewReady: false, authToken: '' };
 try { config = { ...config, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) }; } catch { /* 未配置 */ }
 const AUTH_TOKEN = process.env.CCW_TOKEN || config.authToken || '';
-const saveConfig = () => fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+const saveConfig = () => fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
 
 const REASON_LABEL = { needs_decision: '需要决策', needs_permission: '需要权限', blocked: '阻塞', review_ready: '完成待审' };
 function pushFeishu(text) {
@@ -196,12 +202,19 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // ---------- server + ws ----------
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({
+  noServer: true,
+  // 浏览器要求服务端在握手中回选一个子协议,否则会主动断开
+  handleProtocols: (protocols) => {
+    for (const p of protocols) if (p.startsWith('ccw.token.')) return p;
+    return false;
+  },
+});
 
 server.on('upgrade', (req, socket, head) => {
   if (!isLocalRequest(req.headers)) { socket.destroy(); return; }
   const url = new URL(req.url, BASE);
-  if (!authOk(req, url)) { socket.destroy(); return; }
+  if (!authOk(req)) { socket.destroy(); return; }
   if (url.pathname === '/ws/events') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       eventClients.add(ws);

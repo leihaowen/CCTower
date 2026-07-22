@@ -47,7 +47,14 @@ function ago(iso) {
 function dirTail(p) { const parts = (p || '').split('/').filter(Boolean); return parts.slice(-2).join('/'); }
 const authToken = () => localStorage.getItem('ccwToken') || '';
 const authHeaders = () => (authToken() ? { 'X-CCW-Token': authToken() } : {});
-const wsAuth = () => (authToken() ? `?token=${encodeURIComponent(authToken())}` : '');
+// WS 令牌走 Sec-WebSocket-Protocol 子协议(base64url),不进 URL,避免泄漏到日志/历史
+const wsProto = () => {
+  const t = authToken();
+  if (!t) return undefined;
+  const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(t)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return ['ccw.token.' + b64];
+};
 async function api(path, body) {
   const res = await fetch(path, {
     method: body ? 'POST' : 'GET',
@@ -73,7 +80,7 @@ async function readClipboard() {
 let eventsWs = null;
 function connectEvents() {
   if (eventsWs && (eventsWs.readyState === 0 || eventsWs.readyState === 1)) return;
-  const ws = new WebSocket(`ws://${location.host}/ws/events${wsAuth()}`);
+  const ws = new WebSocket(`ws://${location.host}/ws/events`, wsProto());
   eventsWs = ws;
   ws.onopen = () => $('#connbar').hidden = true;
   ws.onmessage = (e) => {
@@ -591,7 +598,7 @@ function renderWorkspace() {
   let controller = false;
   const connectTerm = (replay) => {
     if (replay && term) term.reset(); // 重连时服务端会整体回放缓冲区,先清屏避免重复
-    termWs = new WebSocket(`ws://${location.host}/ws/term/${s.id}${wsAuth()}`);
+    termWs = new WebSocket(`ws://${location.host}/ws/term/${s.id}`, wsProto());
     termWs.onmessage = (e) => {
       const m = JSON.parse(e.data);
       if (m.type === 'data') term.write(m.data);

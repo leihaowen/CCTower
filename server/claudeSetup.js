@@ -21,7 +21,7 @@ function writeHookSettings(dir, base, sessionId, token) {
     permissions: { allow: ['mcp__cctower__report_status'] },
   };
   const file = path.join(dir, `hooks-${sessionId}.json`);
-  fs.writeFileSync(file, JSON.stringify(settings, null, 2));
+  fs.writeFileSync(file, JSON.stringify(settings, null, 2), { mode: 0o600 }); // 可能含认证令牌,仅属主可读
   return file;
 }
 
@@ -34,7 +34,7 @@ function writeMcpConfig(dir, base, sessionId, token) {
     mcpServers: {
       cctower: { command: process.execPath, args: [path.join(__dirname, 'mcpReport.js')], env },
     },
-  }, null, 2));
+  }, null, 2), { mode: 0o600 }); // env 可能含认证令牌,仅属主可读
   return file;
 }
 

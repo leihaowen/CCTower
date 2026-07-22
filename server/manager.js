@@ -25,7 +25,7 @@ class SessionManager {
     this.runtime = new Map(); // id -> { pty, buffer, clients:Set<ws>, controller:ws|null }
     this._merging = new Set(); // projectDir 级合并互斥
     fs.mkdirSync(path.join(dataDir, 'worktrees'), { recursive: true });
-    fs.mkdirSync(path.join(dataDir, 'hooks'), { recursive: true });
+    fs.mkdirSync(path.join(dataDir, 'hooks'), { recursive: true, mode: 0o700 });
     this.stateFile = path.join(dataDir, 'sessions.json');
     this._load();
     this._staleTimer = setInterval(() => this._checkStale(), 30_000);
@@ -60,7 +60,7 @@ class SessionManager {
     clearTimeout(this._saveT);
     this._saveT = setTimeout(() => {
       const arr = [...this.sessions.values()];
-      fs.writeFileSync(this.stateFile, JSON.stringify(arr, null, 2));
+      fs.writeFileSync(this.stateFile, JSON.stringify(arr, null, 2), { mode: 0o600 });
     }, 200);
   }
 
@@ -255,7 +255,7 @@ class SessionManager {
         // attach 客户端拿不到程序退出码,落盘供 onExit 读取
         `echo "$ec" > ${q(this._exitFile(s.id))}`,
         'exit "$ec"',
-      ].join('\n'));
+      ].join('\n'), { mode: 0o700 }); // 含令牌导出,仅属主可读可执行
       try { this._tmux(['kill-session', '-t', `=ccw_${s.id}`]); } catch { /* 无残留 */ }
       this._tmux(['new-session', '-d', '-s', `ccw_${s.id}`, '-x', '120', '-y', '32', 'bash', launch]);
       this._applyTmuxGlobals();
