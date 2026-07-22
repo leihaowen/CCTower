@@ -231,6 +231,8 @@ class SessionManager {
       return;
     }
     rt.clients.add(ws);
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
     if (!rt.controller || rt.controller.readyState !== 1) rt.controller = ws;
     ws.send(JSON.stringify({ type: 'data', data: rt.buffer }));
     ws.send(JSON.stringify({ type: 'role', controller: rt.controller === ws }));
@@ -545,10 +547,15 @@ class SessionManager {
     }
   }
 
-  // 心跳:探活并保持连接,断开的客户端由 ws 库回收
+  // 心跳:上一轮没回 pong 的连接视为死连接,主动 terminate。
+  // 关键作用:清掉标签页休眠留下的半开连接,否则它会一直占着
+  // "输入控制者"身份,重连回来的标签页只能只读、resize 被忽略,
+  // 导致 TUI 底部(输入框/状态栏)被裁掉。
   pingClients() {
     for (const rt of this.runtime.values()) {
       for (const ws of rt.clients) {
+        if (ws.isAlive === false) { try { ws.terminate(); } catch { } continue; }
+        ws.isAlive = false;
         if (ws.readyState === 1) { try { ws.ping(); } catch { } }
       }
     }

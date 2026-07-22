@@ -120,6 +120,8 @@ server.on('upgrade', (req, socket, head) => {
   if (url.pathname === '/ws/events') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       eventClients.add(ws);
+      ws.isAlive = true;
+      ws.on('pong', () => { ws.isAlive = true; });
       ws.on('close', () => eventClients.delete(ws));
       ws.send(JSON.stringify({ type: 'snapshot', sessions: manager.list().map(publicSession) }));
     });
@@ -136,13 +138,15 @@ setInterval(() => {
   for (const u of manager.collectTails()) broadcast({ type: 'tail', id: u.id, tail: u.tail });
 }, 2000);
 
-// 心跳保活:探测死连接并保持链路活跃(浏览器自动回 pong)
+// 心跳保活:上一轮未回 pong 的视为死连接并 terminate(浏览器自动回 pong)
 setInterval(() => {
   for (const ws of eventClients) {
+    if (ws.isAlive === false) { try { ws.terminate(); } catch { } continue; }
+    ws.isAlive = false;
     if (ws.readyState === 1) { try { ws.ping(); } catch { } }
   }
   manager.pingClients();
-}, 30_000);
+}, 15_000);
 
 server.listen(PORT, HOST, () => {
   console.log(`Agent Workbench MVP 已启动: ${BASE}`);
