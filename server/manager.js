@@ -263,19 +263,20 @@ class SessionManager {
       env.CCW_BASE_URL = this.baseUrl;
       p = pty.spawn(argv[0], argv.slice(1), { name: 'xterm-256color', cols: 120, rows: 32, cwd: s.cwd, env });
     }
-    this._wire(s, p);
+    this._wire(s, p, { usedResume: argv.includes('--resume') });
     if (s.type === 'terminal' && s.command) {
       setTimeout(() => { try { p.write(s.command + '\r'); } catch { } }, 300);
     }
   }
 
   // 挂接一个 PTY(新建或重新接管)到 session:屏幕状态、事件、退出处理
-  _wire(s, p, { keepClients } = {}) {
+  _wire(s, p, { keepClients, usedResume } = {}) {
     // headless xterm 维护真实屏幕状态,供列表页迷你终端展示;列数必须与 PTY 一致,否则光标定位错乱
     const head = new HeadlessTerminal({ cols: 120, rows: 32, scrollback: 400, allowProposedApi: true });
     const rt = {
       pty: p, head, buffer: '', clients: keepClients || new Set(),
       controller: null, expectExit: false, booted: false, lastTail: '',
+      usedResume: !!usedResume, spawnAt: Date.now(),
     };
     for (const ws of rt.clients) { if (!rt.controller && ws.readyState === 1) rt.controller = ws; }
     this.runtime.set(s.id, rt);
@@ -331,6 +332,12 @@ class SessionManager {
       if (rt.expectExit) {
         this._setStatus(s, 'exited', '已被用户停止');
       } else if (s.type === 'claude') {
+        // --resume 后快速异常退出,多半是会话 id 失效(transcript 被清等):
+        // 清掉 id,避免每次重启都陷入同一失败;下次重启开新对话
+        if (code !== 0 && rt.usedResume && Date.now() - rt.spawnAt < 20_000 && s.claudeSessionId) {
+          s.claudeSessionId = null;
+          this._event(s, 'warning', 'resume 恢复失败(启动后即退出),已清除失效的会话 id;再次重启将开启新对话');
+        }
         if (code === 0) this._setStatus(s, 'completed', 'Claude 会话已结束');
         else this._setStatus(s, 'blocked', `Claude 进程异常退出(code ${code})`);
       } else {
@@ -471,11 +478,14 @@ class SessionManager {
         if (low.includes('permission') || msg.includes('权限')) {
           this._setStatus(s, 'needs_permission', msg || 'Claude 请求批准一项敏感操作');
         } else if (low.includes('waiting') || msg.includes('等待')) {
-          // 尚未领到任务的空闲提示不算"等你决策"
-          if (s.status !== 'ready') {
-            const q = s.brief && s.brief.decision && s.brief.decision.question;
-            this._setStatus(s, 'needs_decision', q ? `需要你决定:${q}` : 'Claude 正在等待你的回答', q ? 'Agent 上报' : '系统观测');
+          const q = s.brief && s.brief.decision && s.brief.decision.question;
+          if (q) {
+            this._setStatus(s, 'needs_decision', `需要你决定:${q}`, 'Agent 上报');
+          } else if (['executing', 'verifying', 'stale'].includes(s.status)) {
+            this._setStatus(s, 'needs_decision', 'Claude 正在等待你的回答');
           }
+          // ready(未领任务)与 review_ready/completed(任务已结束)的
+          // 空闲提示只是"没人打字",不升级为需要决策
         } else if (msg) {
           this._setStatus(s, s.status, msg);
         }
