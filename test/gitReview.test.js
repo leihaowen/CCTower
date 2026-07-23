@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { computeDiff, squashMerge } = require('./gitReview');
+const { computeDiff, squashMerge } = require('../server/gitReview');
 
 function run(args, cwd) { return execFileSync('git', args, { cwd, encoding: 'utf8' }); }
 function write(dir, f, content) {

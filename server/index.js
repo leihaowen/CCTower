@@ -7,17 +7,22 @@ const { WebSocketServer } = require('ws');
 const { SessionManager } = require('./manager');
 
 const PORT = Number(process.env.CCW_PORT || 7080);
-const HOST = '127.0.0.1'; // PRD §8 安全要求:默认只绑定 localhost
-const BASE = `http://${HOST}:${PORT}`;
-const DATA_DIR = path.join(__dirname, '..', '.ccw-data');
-fs.mkdirSync(DATA_DIR, { recursive: true });
+// PRD §8 安全要求:默认只绑定 localhost。设 CCW_HOST=0.0.0.0 对外时必须配 CCW_TOKEN,
+// 且把外部访问域名加入 CCW_ALLOWED_HOSTS(逗号分隔 host:port)。
+const HOST = process.env.CCW_HOST || '127.0.0.1';
+const BASE = `http://127.0.0.1:${PORT}`; // hooks/report 回调恒走本机回环
+const DATA_DIR = process.env.CCW_DATA_DIR || path.join(__dirname, '..', '.ccw-data');
+fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
 // 防御浏览器驱动的 CSRF / DNS rebinding:只接受本机 Host,且 Origin(若有)必须同源。
 // 本机 curl(hooks/report)不带 Origin,不受影响。
-const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+const ALLOWED_HOSTS = new Set([
+  `127.0.0.1:${PORT}`, `localhost:${PORT}`,
+  ...(process.env.CCW_ALLOWED_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
+]);
 function isLocalRequest(headers) {
   if (!ALLOWED_HOSTS.has(headers.host)) return false;
   if (headers.origin) {
@@ -25,8 +30,25 @@ function isLocalRequest(headers) {
   }
   return true;
 }
+// 可选认证:设置 CCW_TOKEN(或 config.json 的 authToken)后,API 与 WS 都要求令牌。
+// WS 经 Sec-WebSocket-Protocol 子协议携带(base64url),绝不放进 URL(避免进代理日志/浏览器历史)。
+function wsTokenFrom(req) {
+  const raw = req.headers['sec-websocket-protocol'] || '';
+  for (const p of raw.split(',').map((x) => x.trim())) {
+    if (p.startsWith('ccw.token.')) {
+      try { return Buffer.from(p.slice(10), 'base64url').toString('utf8'); } catch { return ''; }
+    }
+  }
+  return '';
+}
+function authOk(req) {
+  if (!AUTH_TOKEN) return true;
+  const t = req.headers['x-ccw-token'] || wsTokenFrom(req);
+  return t.length === AUTH_TOKEN.length && require('crypto').timingSafeEqual(Buffer.from(t), Buffer.from(AUTH_TOKEN));
+}
 app.use('/api', (req, res, next) => {
   if (!isLocalRequest(req.headers)) return res.status(403).json({ error: 'forbidden' });
+  if (!authOk(req)) return res.status(401).json({ error: 'unauthorized' });
   next();
 });
 
@@ -37,11 +59,35 @@ function broadcast(obj) {
   for (const ws of eventClients) if (ws.readyState === 1) ws.send(msg);
 }
 
+// ---------- 通知配置(飞书群机器人 webhook)----------
+const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+let config = { feishuWebhook: '', notifyReviewReady: false, authToken: '' };
+try { config = { ...config, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) }; } catch { /* 未配置 */ }
+const AUTH_TOKEN = process.env.CCW_TOKEN || config.authToken || '';
+const saveConfig = () => fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+
+const REASON_LABEL = { needs_decision: '需要决策', needs_permission: '需要权限', blocked: '阻塞', review_ready: '完成待审' };
+function pushFeishu(text) {
+  if (!config.feishuWebhook) return Promise.resolve({ skipped: true });
+  return fetch(config.feishuWebhook, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ msg_type: 'text', content: { text } }),
+  }).then((r) => r.json()).catch((e) => ({ error: e.message }));
+}
+
 const manager = new SessionManager({
   dataDir: DATA_DIR,
   baseUrl: BASE,
+  authToken: AUTH_TOKEN,
   onChange: (s) => broadcast({ type: 'session', session: s.deleted ? { id: s.id, deleted: true } : publicSession(s) }),
-  onNotify: (s, reason) => broadcast({ type: 'notify', id: s.id, name: s.name, reason, statusLine: s.statusLine }),
+  onNotify: (s, reason) => {
+    broadcast({ type: 'notify', id: s.id, name: s.name, reason, statusLine: s.statusLine });
+    // 出圈推送:决策/权限/阻塞必推,完成待审按配置;去重由状态机的 lastNotified 保证
+    if (reason !== 'review_ready' || config.notifyReviewReady) {
+      pushFeishu(`[CCTower] ${s.name} · ${REASON_LABEL[reason] || reason}\n${s.statusLine}`);
+    }
+  },
 });
 
 function publicSession(s) {
@@ -88,6 +134,9 @@ app.post('/api/sessions/:id/action', (req, res) => {
     delete: () => manager.remove(id),
     'refresh-brief': () => manager.refreshBrief(id),
     redraw: () => manager.redraw(id),
+    'approve-permission': () => manager.permissionAction(id, true),
+    'deny-permission': () => manager.permissionAction(id, false),
+    finish: () => manager.finish(id),
     'flag-brief': () => manager.flagBrief(id),
     note: () => manager.setNote(id, value),
     merge: () => manager.merge(id),
@@ -114,6 +163,34 @@ app.post('/api/report/:id', (req, res) => {
   res.json({ ok });
 });
 
+// 最近使用过的项目目录(新建 session 下拉候选)
+app.get('/api/projects', (_req, res) => {
+  const seen = new Map();
+  for (const s of manager.list()) {
+    seen.set(s.projectDir, Math.max(seen.get(s.projectDir) || 0, Date.parse(s.lastActivityAt) || 0));
+  }
+  seen.set(process.cwd(), seen.get(process.cwd()) || 1);
+  const dirs = [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([d]) => d).slice(0, 12);
+  res.json({ dirs });
+});
+
+app.get('/api/settings', (_req, res) => res.json({ ...config, authToken: config.authToken ? '(已设置)' : '' }));
+app.post('/api/settings', (req, res) => {
+  const { feishuWebhook, notifyReviewReady } = req.body || {};
+  if (feishuWebhook !== undefined) {
+    const url = String(feishuWebhook).trim();
+    if (url && !/^https:\/\//.test(url)) return res.status(400).json({ error: 'webhook 必须是 https URL' });
+    config.feishuWebhook = url;
+  }
+  if (notifyReviewReady !== undefined) config.notifyReviewReady = !!notifyReviewReady;
+  saveConfig();
+  res.json(config);
+});
+app.post('/api/settings/test', async (_req, res) => {
+  const r = await pushFeishu('[CCTower] 测试消息:通知链路正常 ✅');
+  res.json(r);
+});
+
 app.get('/api/health', (_req, res) => res.json({ ok: true, sessions: manager.list().length }));
 
 // ---------- static ----------
@@ -125,11 +202,19 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // ---------- server + ws ----------
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({
+  noServer: true,
+  // 浏览器要求服务端在握手中回选一个子协议,否则会主动断开
+  handleProtocols: (protocols) => {
+    for (const p of protocols) if (p.startsWith('ccw.token.')) return p;
+    return false;
+  },
+});
 
 server.on('upgrade', (req, socket, head) => {
   if (!isLocalRequest(req.headers)) { socket.destroy(); return; }
   const url = new URL(req.url, BASE);
+  if (!authOk(req)) { socket.destroy(); return; }
   if (url.pathname === '/ws/events') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       eventClients.add(ws);
@@ -148,7 +233,7 @@ server.on('upgrade', (req, socket, head) => {
 
 // 迷你终端画面推送:2 秒一次,只推有变化的 session
 setInterval(() => {
-  for (const u of manager.collectTails()) broadcast({ type: 'tail', id: u.id, tail: u.tail });
+  for (const u of manager.collectTails()) broadcast({ type: 'tail', id: u.id, tail: u.tail, html: u.html });
 }, 2000);
 
 // 心跳保活:上一轮未回 pong 的视为死连接并 terminate(浏览器自动回 pong)

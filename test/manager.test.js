@@ -24,7 +24,8 @@ const { SessionManager } = require('../server/manager');
 
 function newManager() {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccw-test-'));
-  const m = new SessionManager({ dataDir, baseUrl: 'http://127.0.0.1:0', onChange: () => { }, onNotify: () => { } });
+  // backend:'pty' 让测试断言直接 spawn 的参数,不经 tmux 包装
+  const m = new SessionManager({ dataDir, baseUrl: 'http://127.0.0.1:0', onChange: () => { }, onNotify: () => { }, backend: 'pty' });
   clearInterval(m._staleTimer);
   return m;
 }

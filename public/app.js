@@ -45,10 +45,29 @@ function ago(iso) {
   return `${(d / 86400) | 0} 天前`;
 }
 function dirTail(p) { const parts = (p || '').split('/').filter(Boolean); return parts.slice(-2).join('/'); }
+const authToken = () => localStorage.getItem('ccwToken') || '';
+const authHeaders = () => (authToken() ? { 'X-CCW-Token': authToken() } : {});
+// WS 令牌走 Sec-WebSocket-Protocol 子协议(base64url),不进 URL,避免泄漏到日志/历史
+const wsProto = () => {
+  const t = authToken();
+  if (!t) return undefined;
+  const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(t)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return ['ccw.token.' + b64];
+};
 async function api(path, body) {
-  const res = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
+  const res = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401) { promptToken(); throw new Error('unauthorized'); }
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
   return res.json();
+}
+function promptToken() {
+  const t = prompt('此 CCTower 已开启访问令牌(CCW_TOKEN),请输入:');
+  if (t !== null) { localStorage.setItem('ccwToken', t.trim()); location.reload(); }
 }
 const act = (id, op, value) => api(`/api/sessions/${id}/action`, { op, value });
 
@@ -61,7 +80,7 @@ async function readClipboard() {
 let eventsWs = null;
 function connectEvents() {
   if (eventsWs && (eventsWs.readyState === 0 || eventsWs.readyState === 1)) return;
-  const ws = new WebSocket(`ws://${location.host}/ws/events`);
+  const ws = new WebSocket(`ws://${location.host}/ws/events`, wsProto());
   eventsWs = ws;
   ws.onopen = () => $('#connbar').hidden = true;
   ws.onmessage = (e) => {
@@ -76,9 +95,11 @@ function connectEvents() {
       render();
     } else if (m.type === 'tail') {
       const s = state.sessions.get(m.id);
-      if (s) s.tailCache = m.tail;
+      if (s) { s.tailCache = m.tail; s.tailHtml = m.html; }
       document.querySelectorAll(`.mini-term[data-id="${m.id}"]`).forEach((el) => {
-        el.textContent = m.tail;
+        // html 由服务端逐段转义生成,只含着色 span
+        if (m.html !== undefined) el.innerHTML = m.html;
+        else el.textContent = m.tail;
         el.scrollTop = el.scrollHeight;
       });
     } else if (m.type === 'notify') {
@@ -206,13 +227,19 @@ function cardHTML(s) {
       <span class="status-pill" style="--pc:${st.color}">${st.label}</span>
       <span class="card-time" title="进入当前状态的时长">${ago(s.statusChangedAt || s.lastActivityAt)}</span>
     </div>
-    <pre class="mini-term" data-id="${s.id}">${esc(s.tailCache || (s.alive ? '(等待画面…)' : '(未在运行)'))}</pre>
+    <pre class="mini-term" data-id="${s.id}">${s.tailHtml !== undefined && s.tailHtml !== null ? s.tailHtml : esc(s.tailCache || '')}${s.tailHtml || s.tailCache ? '' : esc(s.alive ? '(等待画面…)' : '(未在运行)')}</pre>
     <div class="card-line">${esc(s.statusLine)}<span class="src">${s.brief ? SRC_LABEL[s.brief.source] : '系统观测'}</span></div>
     ${s.status === 'review_ready' && s.worktree ? `<div class="card-review"><button class="review-btn">审阅改动</button></div>` : ''}
     ${d && d.question ? `<div class="card-decision">
       <div class="q">${esc(d.question)}</div>
       <div class="opts">${(d.options || []).map((o) =>
         `<button class="opt-btn ${o === d.recommended ? 'rec' : ''}" data-answer="${esc(o)}">${esc(o)}</button>`).join('')}</div>
+    </div>` : ''}
+    ${s.status === 'needs_permission' && s.alive ? `<div class="card-decision">
+      <div class="opts">
+        <button class="opt-btn perm-btn" data-perm="allow" title="向权限对话框发送选项 1(允许)">✓ 批准</button>
+        <button class="opt-btn perm-btn deny" data-perm="deny" title="向权限对话框发送 Esc(拒绝)">✗ 拒绝</button>
+      </div>
     </div>` : ''}
   </div>`;
 }
@@ -280,7 +307,8 @@ function wireCards(sel = '.card') {
       const btn = e.target.closest('.opt-btn');
       if (btn) {
         e.stopPropagation();
-        sendDecision(el.dataset.id, btn.dataset.answer);
+        if (btn.dataset.perm) sendPermission(el.dataset.id, btn.dataset.perm === 'allow');
+        else sendDecision(el.dataset.id, btn.dataset.answer);
         return;
       }
       openSession(el.dataset.id);
@@ -288,6 +316,11 @@ function wireCards(sel = '.card') {
     el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openSession(el.dataset.id); });
     bindHover(el, el.dataset.id);
   });
+}
+
+async function sendPermission(id, approve) {
+  const r = await act(id, approve ? 'approve-permission' : 'deny-permission').catch((e) => ({ error: e.message }));
+  toast(r && r.error ? '操作失败:' + r.error : (approve ? '已批准' : '已拒绝'), '', null, 2500);
 }
 
 async function sendDecision(id, answer) {
@@ -379,8 +412,14 @@ function renderDiffOverlay() {
     try {
       const r = await act(id, 'merge');
       if (r.merged) {
-        toast(`已合并到 ${r.target}(${r.hash})`, '点击可归档该 session', () => act(id, 'archive'));
         closeDiff();
+        if (confirm(`已合并到 ${r.target}(${r.hash})。\n\n一键收尾:停止该 session、清理 worktree 与分支、归档?\n(会话记录与时间线保留)`)) {
+          await act(id, 'finish');
+          toast('已收尾', '进程已停止,worktree 与分支已清理,session 已归档', null, 5000);
+          closeWorkspace('sessions');
+        } else {
+          toast(`已合并到 ${r.target}(${r.hash})`, '稍后可在工作区手动归档', null, 5000);
+        }
         return;
       }
       if (r.conflict) showConflict(id, r, el);
@@ -559,7 +598,7 @@ function renderWorkspace() {
   let controller = false;
   const connectTerm = (replay) => {
     if (replay && term) term.reset(); // 重连时服务端会整体回放缓冲区,先清屏避免重复
-    termWs = new WebSocket(`ws://${location.host}/ws/term/${s.id}`);
+    termWs = new WebSocket(`ws://${location.host}/ws/term/${s.id}`, wsProto());
     termWs.onmessage = (e) => {
       const m = JSON.parse(e.data);
       if (m.type === 'data') term.write(m.data);
@@ -603,6 +642,13 @@ function updatePanels(s) {
       ${d.reason ? `<div class="why">推荐 ${esc(d.recommended || '')}:${esc(d.reason)}</div>` : ''}
       <div class="opts">${(d.options || []).map((o) => `<button class="opt-btn ${o === d.recommended ? 'rec' : ''}" data-answer="${esc(o)}">${esc(o)}</button>`).join('')}</div>
     </div>` : ''}
+    ${s.status === 'needs_permission' && s.alive ? `<div class="decision-box perm">
+      <div class="q">${esc(s.statusLine)}</div>
+      <div class="opts">
+        <button class="opt-btn perm-btn" data-perm="allow" title="向权限对话框发送选项 1(允许)">✓ 批准</button>
+        <button class="opt-btn perm-btn deny" data-perm="deny" title="向权限对话框发送 Esc(拒绝)">✗ 拒绝</button>
+      </div>
+    </div>` : ''}
     <div class="reply"><input id="ws-reply" placeholder="${s.type === 'claude' ? '回复 Claude(回车发送到原会话)' : '向终端发送一行命令'}"><button class="btn-ghost" id="ws-send">发送</button></div>
     <div style="height:16px"></div>
     <h4>Session</h4>
@@ -618,7 +664,9 @@ function updatePanels(s) {
     <h4>手工备注</h4>
     <div class="note-box"><textarea id="ws-note" rows="2" placeholder="给这个 session 写一句备注">${esc(s.note)}</textarea></div>`;
 
-  $('#ws-left').querySelectorAll('.opt-btn').forEach((b) => b.onclick = () => sendDecision(s.id, b.dataset.answer));
+  $('#ws-left').querySelectorAll('.opt-btn').forEach((b) => {
+    b.onclick = () => (b.dataset.perm ? sendPermission(s.id, b.dataset.perm === 'allow') : sendDecision(s.id, b.dataset.answer));
+  });
   const reply = $('#ws-reply'), send = () => {
     if (!reply.value.trim()) return;
     api(`/api/sessions/${s.id}/input`, { text: reply.value.trim(), record: d ? { question: d.question } : null })
@@ -641,13 +689,22 @@ function updatePanels(s) {
     <div class="timeline">${evs.map((e) => `
       <div class="tl-item k-${esc(e.kind)}">
         <div class="tl-time">${new Date(e.at).toLocaleTimeString()} <span class="tl-src">· ${esc(e.source)}</span></div>
-        <div class="tl-text">${esc(e.text)}</div>
+        <div class="tl-text">${esc(e.text)}${e.count > 1 ? ` <span class="tl-src">×${e.count}</span>` : ''}</div>
       </div>`).join('') || '<div class="tl-item"><div class="tl-text">暂无事件</div></div>'}</div>`;
 }
 
 /* ---------- new session dialog ---------- */
 const dlg = $('#dlg-new');
-$('#btn-new').onclick = () => { dlg.showModal(); syncTypeUI(); };
+$('#btn-new').onclick = async () => {
+  dlg.showModal();
+  syncTypeUI();
+  try {
+    const { dirs } = await api('/api/projects');
+    $('#proj-list').innerHTML = dirs.map((d) => `<option value="${esc(d)}">`).join('');
+    const inp = dlg.querySelector('[name=projectDir]');
+    if (!inp.value && dirs[0]) inp.placeholder = dirs[0] + '(留空使用)';
+  } catch { /* 列表失败不影响创建 */ }
+};
 $('#dlg-cancel').onclick = () => dlg.close();
 function syncTypeUI() {
   const type = new FormData($('#form-new')).get('type');
@@ -677,10 +734,35 @@ $('#form-new').onsubmit = async (e) => {
 /* ---------- nav & boot ---------- */
 document.querySelectorAll('.nav-item').forEach((b) => b.onclick = () => { disposeTerm(); state.view = b.dataset.view; state.currentId = null; render(); });
 $('#btn-reload').onclick = () => location.reload();
+const dlgSettings = $('#dlg-settings');
+$('#btn-settings').onclick = async () => {
+  const c = await api('/api/settings');
+  dlgSettings.querySelector('[name=feishuWebhook]').value = c.feishuWebhook || '';
+  dlgSettings.querySelector('[name=notifyReviewReady]').checked = !!c.notifyReviewReady;
+  dlgSettings.showModal();
+};
+$('#settings-cancel').onclick = () => dlgSettings.close();
+$('#settings-test').onclick = async () => {
+  await saveSettings();
+  const r = await api('/api/settings/test', {});
+  toast('测试消息', r.skipped ? '未配置 webhook' : (r.code === 0 || r.StatusCode === 0 ? '已发送,去飞书看看' : '发送失败:' + JSON.stringify(r).slice(0, 80)));
+};
+async function saveSettings() {
+  const f = new FormData($('#form-settings'));
+  return api('/api/settings', { feishuWebhook: f.get('feishuWebhook'), notifyReviewReady: f.get('notifyReviewReady') === 'on' });
+}
+$('#form-settings').onsubmit = async (e) => {
+  e.preventDefault();
+  try { await saveSettings(); dlgSettings.close(); toast('已保存', '通知设置已更新', null, 2500); }
+  catch (err) { toast('保存失败', err.message); }
+};
 $('#btn-notify').onclick = async () => {
   const p = await Notification.requestPermission();
   toast('桌面通知', p === 'granted' ? '已开启:需要决策/权限/阻塞时会提醒你' : '未授权,仅使用页面内提醒');
 };
 setInterval(() => { if (state.view !== 'workspace') render(); }, 30_000);
-connectEvents();
-render();
+// 若服务端开启 token 认证,先校验令牌再建立连接(WS 被拒时只会静默断开,无法提示)
+fetch('/api/health', { headers: authHeaders() }).then((r) => {
+  if (r.status === 401) promptToken();
+  else { connectEvents(); render(); }
+}).catch(() => { connectEvents(); render(); });
