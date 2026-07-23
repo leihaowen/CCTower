@@ -708,6 +708,39 @@ $('#btn-new').onclick = async () => {
   } catch { /* 列表失败不影响创建 */ }
 };
 $('#dlg-cancel').onclick = () => dlg.close();
+
+// 目录浏览器:点击逐级进入,git 仓库带标记;手动输入路径仍然可用
+let browsePath = null;
+async function loadDir(p, fallbackHome = true) {
+  try {
+    const d = await api('/api/fs' + (p ? '?path=' + encodeURIComponent(p) : ''));
+    browsePath = d.path;
+    $('#dir-cur').textContent = d.path;
+    $('#dir-cur').append(d.isGit ? Object.assign(document.createElement('span'), { className: 'git-badge', textContent: 'git' }) : '');
+    const up = $('#dir-up');
+    up.disabled = !d.parent;
+    up.dataset.parent = d.parent || '';
+    $('#dir-list').innerHTML = d.dirs.map((x) =>
+      `<button type="button" class="dir-item" data-name="${esc(x.name)}">📁 ${esc(x.name)}${x.isGit ? '<span class="git-badge">git</span>' : ''}</button>`
+    ).join('') || '<div class="dir-empty">(没有子目录)</div>';
+    $('#dir-list').querySelectorAll('.dir-item').forEach((b) => {
+      b.onclick = () => loadDir(browsePath.replace(/\/$/, '') + '/' + b.dataset.name, false);
+    });
+  } catch (e) {
+    if (fallbackHome && p) return loadDir(null, false); // 输入的路径无效时退回主目录
+    toast('无法读取目录', e.message);
+  }
+}
+$('#btn-browse').onclick = () => {
+  const box = $('#dir-browser');
+  box.hidden = !box.hidden;
+  if (!box.hidden) loadDir(dlg.querySelector('[name=projectDir]').value.trim() || null);
+};
+$('#dir-up').onclick = () => $('#dir-up').dataset.parent && loadDir($('#dir-up').dataset.parent, false);
+$('#dir-pick').onclick = () => {
+  dlg.querySelector('[name=projectDir]').value = browsePath || '';
+  $('#dir-browser').hidden = true;
+};
 function syncTypeUI() {
   const type = new FormData($('#form-new')).get('type');
   $('#field-isolate').style.display = type === 'claude' ? '' : 'none';

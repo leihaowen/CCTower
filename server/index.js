@@ -163,6 +163,25 @@ app.post('/api/report/:id', (req, res) => {
   res.json({ ok });
 });
 
+// 目录浏览(新建 session 的 UI 选择器):只列子目录,标记 git 仓库
+app.get('/api/fs', (req, res) => {
+  try {
+    const p = path.resolve(String(req.query.path || '') || require('os').homedir());
+    const dirs = fs.readdirSync(p, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => {
+        let isGit = false;
+        try { isGit = fs.existsSync(path.join(p, e.name, '.git')); } catch { /* 无权限 */ }
+        return { name: e.name, isGit };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const parent = path.dirname(p);
+    res.json({ path: p, parent: parent !== p ? parent : null, isGit: fs.existsSync(path.join(p, '.git')), dirs });
+  } catch (e) {
+    res.status(400).json({ error: String(e.message).split('\n')[0] });
+  }
+});
+
 // 最近使用过的项目目录(新建 session 下拉候选)
 app.get('/api/projects', (_req, res) => {
   const seen = new Map();

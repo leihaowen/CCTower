@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CCTower</title>
 <link rel="stylesheet" href="/vendor/xterm.css">
-<link rel="stylesheet" href="/style.css?v=17">
+<link rel="stylesheet" href="/style.css?v=18">
 </head>
 <body>
 <div id="connbar" hidden>连接已断开,正在自动重连…</div>
@@ -46,8 +46,21 @@
         <div><strong>Terminal</strong><span>普通 shell,只做会话管理与基础观测</span></div></label>
     </div>
     <label class="field">名称<input name="name" placeholder="例如:修复登录 Bug"></label>
-    <label class="field">项目目录<input name="projectDir" list="proj-list" placeholder="/path/to/project"></label>
+    <label class="field">项目目录
+      <div class="dir-row">
+        <input name="projectDir" list="proj-list" placeholder="/path/to/project">
+        <button type="button" id="btn-browse" class="btn-ghost">浏览…</button>
+      </div>
+    </label>
     <datalist id="proj-list"></datalist>
+    <div id="dir-browser" hidden>
+      <div class="dir-head">
+        <button type="button" id="dir-up" class="btn-ghost" title="上级目录">↑</button>
+        <span id="dir-cur"></span>
+        <button type="button" id="dir-pick" class="btn-primary">选择此目录</button>
+      </div>
+      <div id="dir-list" class="dir-list"></div>
+    </div>
     <label class="field" id="field-cmd">初始任务 / 命令<textarea name="command" rows="3" placeholder="给 Claude 的任务描述,或终端要执行的命令"></textarea></label>
     <label class="check" id="field-isolate"><input type="checkbox" name="isolate" checked>
       使用独立 Git worktree 隔离(推荐)<em>关闭后多个 session 将写入同一份工作副本,可能互相冲突</em></label>
@@ -76,6 +89,6 @@
 
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
-<script src="/app.js?v=17"></script>
+<script src="/app.js?v=18"></script>
 </body>
 </html>
