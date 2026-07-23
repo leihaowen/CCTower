@@ -74,3 +74,19 @@ test('terminal 类型不受影响:hook 不写入 claudeSessionId', () => {
   assert.ok(!s.claudeSessionId, 'terminal 会话不应记录 claudeSessionId');
   clearTimeout(m._saveT);
 });
+
+test('自动命名优先 Agent 上报 objective,OSC 标题不再覆盖', () => {
+  const m = newManager();
+  const s = m.createSession({ type: 'claude', projectDir: os.tmpdir(), isolate: false });
+  m.applyReport(s.id, { objective: '修复支付回调重复扣款', phase: 'executing', next_action: '继续' });
+  assert.equal(s.name, '修复支付回调重复扣款');
+  assert.equal(s.nameSource, 'objective');
+  m._onTitle(s, '根据PRD制作MVP原型'); // 对话主题类标题
+  assert.equal(s.termTitle, '根据PRD制作MVP原型', '标题仍被记录');
+  assert.equal(s.name, '修复支付回调重复扣款', '名字不被标题覆盖');
+  // 手动命名永远最高
+  m.rename(s.id, '我的名字');
+  m.applyReport(s.id, { objective: '另一个目标', phase: 'executing', next_action: 'x' });
+  assert.equal(s.name, '我的名字');
+  clearTimeout(m._saveT);
+});

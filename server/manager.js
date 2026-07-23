@@ -447,10 +447,11 @@ class SessionManager {
     if (!clean || clean === s.termTitle) return;
     s.termTitle = clean;
     const rt = this.runtime.get(s.id);
-    if (!rt || s.type !== 'claude' || s.customNamed || /^claude$/i.test(clean)) return;
+    // Agent 上报过 objective 后,标题(对话主题)不再参与命名
+    if (!rt || s.type !== 'claude' || s.customNamed || s.nameSource === 'objective' || /^claude$/i.test(clean)) return;
     clearTimeout(rt.titleT);
     rt.titleT = setTimeout(() => {
-      if (s.termTitle !== clean || s.customNamed || s.name === clean) return;
+      if (s.termTitle !== clean || s.customNamed || s.nameSource === 'objective' || s.name === clean) return;
       s.name = clean;
       rt.autoNamed = rt.autoNamed || [];
       if (!rt.autoNamed.includes(clean)) {
@@ -541,6 +542,23 @@ class SessionManager {
     const s = this.sessions.get(id);
     if (!s || s.type !== 'claude') return false;
     s.lastSemanticAt = new Date().toISOString();
+    // 命名优先级:手动 > Agent 上报的 objective(每个任务开始都会刷新)> OSC 标题(对话主题,容易过期)
+    if (!s.customNamed && r.objective) {
+      const nm = String(r.objective).trim().slice(0, 60);
+      if (nm) {
+        s.nameSource = 'objective';
+        if (s.name !== nm) {
+          s.name = nm;
+          const rt = this.runtime.get(id);
+          const log = rt ? (rt.autoNamed = rt.autoNamed || []) : [];
+          if (!log.includes(nm)) {
+            log.unshift(nm);
+            log.length = Math.min(log.length, 3);
+            this._event(s, 'lifecycle', `会话自动命名:${nm}(来自 Agent 上报的目标)`);
+          }
+        }
+      }
+    }
     s.brief = {
       objective: r.objective || (s.brief && s.brief.objective) || '',
       phase: r.phase || 'executing',
