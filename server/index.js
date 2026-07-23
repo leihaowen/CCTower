@@ -102,13 +102,18 @@ app.get('/api/sessions', (_req, res) => {
 
 app.post('/api/sessions', (req, res) => {
   try {
-    const { name, type, projectDir, command, isolate } = req.body || {};
+    const { name, type, projectDir, command, isolate, model, permissionMode, extraArgs } = req.body || {};
     if (!['terminal', 'claude'].includes(type)) return res.status(400).json({ error: 'type 必须是 terminal 或 claude' });
-    const s = manager.createSession({ name, type, projectDir, command, isolate });
+    const s = manager.createSession({ name, type, projectDir, command, isolate, model, permissionMode, extraArgs });
     res.json(publicSession(s));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
+});
+
+// 创建页命令预览:不落地,仅回显将要执行的 argv
+app.post('/api/preview-command', (req, res) => {
+  res.json({ argv: manager.previewArgv(req.body || {}) });
 });
 
 // worktree session 的改动全览(含未提交与未跟踪文件)

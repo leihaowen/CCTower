@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CCTower</title>
 <link rel="stylesheet" href="/vendor/xterm.css">
-<link rel="stylesheet" href="/style.css?v=18">
+<link rel="stylesheet" href="/style.css?v=19">
 </head>
 <body>
 <div id="connbar" hidden>连接已断开,正在自动重连…</div>
@@ -62,6 +62,34 @@
       <div id="dir-list" class="dir-list"></div>
     </div>
     <label class="field" id="field-cmd">初始任务 / 命令<textarea name="command" rows="3" placeholder="给 Claude 的任务描述,或终端要执行的命令"></textarea></label>
+    <div id="claude-params">
+      <div class="param-row">
+        <label class="field">模型
+          <select name="model">
+            <option value="">默认(账号设置)</option>
+            <option value="claude-fable-5">Fable 5</option>
+            <option value="claude-opus-4-8">Opus 4.8</option>
+            <option value="claude-sonnet-5">Sonnet 5</option>
+            <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+          </select>
+        </label>
+        <label class="field">权限模式
+          <select name="permissionMode">
+            <option value="">默认(每次询问)</option>
+            <option value="plan">plan(只读规划)</option>
+            <option value="acceptEdits">acceptEdits(自动接受编辑)</option>
+            <option value="bypassPermissions">bypassPermissions(全部放行)</option>
+          </select>
+        </label>
+      </div>
+      <label class="field">附加参数
+        <input name="extraArgs" placeholder='例如:--add-dir ../shared --verbose'>
+      </label>
+      <div class="cmd-preview">
+        <span class="cmd-label">将执行</span>
+        <code id="cmd-preview">claude …</code>
+      </div>
+    </div>
     <label class="check" id="field-isolate"><input type="checkbox" name="isolate" checked>
       使用独立 Git worktree 隔离(推荐)<em>关闭后多个 session 将写入同一份工作副本,可能互相冲突</em></label>
     <div class="dlg-actions">
@@ -89,6 +117,6 @@
 
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
-<script src="/app.js?v=18"></script>
+<script src="/app.js?v=19"></script>
 </body>
 </html>

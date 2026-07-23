@@ -656,6 +656,9 @@ function updatePanels(s) {
     <h4>Session</h4>
     <dl class="kv">
       <dt>类型</dt><dd>${s.type === 'claude' ? 'Claude Code' : 'Terminal'}</dd>
+      ${s.type === 'claude' && s.model ? `<dt>模型</dt><dd>${esc(s.model)}</dd>` : ''}
+      ${s.type === 'claude' && s.permissionMode ? `<dt>权限模式</dt><dd>${esc(s.permissionMode)}</dd>` : ''}
+      ${s.type === 'claude' && s.extraArgs ? `<dt>附加参数</dt><dd>${esc(s.extraArgs)}</dd>` : ''}
       <dt>项目</dt><dd>${esc(s.projectDir)}</dd>
       ${s.worktree ? `<dt>worktree</dt><dd>${esc(s.worktree)}</dd><dt>分支</dt><dd>${esc(s.branch)}</dd>` : '<dt>隔离</dt><dd>无(直接在项目目录运行)</dd>'}
       ${s.claudeSessionId ? `<dt>对话</dt><dd>可恢复(重启时 --resume ${esc(s.claudeSessionId.slice(0, 8))}…)</dd>` : ''}
@@ -744,7 +747,32 @@ $('#dir-pick').onclick = () => {
 function syncTypeUI() {
   const type = new FormData($('#form-new')).get('type');
   $('#field-isolate').style.display = type === 'claude' ? '' : 'none';
+  $('#claude-params').style.display = type === 'claude' ? '' : 'none';
+  refreshCmdPreview();
 }
+
+let cmdPreviewT = null;
+function refreshCmdPreview() {
+  clearTimeout(cmdPreviewT);
+  cmdPreviewT = setTimeout(async () => {
+    const f = new FormData($('#form-new'));
+    if (f.get('type') !== 'claude') return;
+    try {
+      const { argv } = await api('/api/preview-command', {
+        type: 'claude',
+        command: f.get('command'),
+        model: f.get('model'),
+        permissionMode: f.get('permissionMode'),
+        extraArgs: f.get('extraArgs'),
+      });
+      // 带空格的参数加引号显示
+      $('#cmd-preview').textContent = argv.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ');
+    } catch { /* 预览失败不影响创建 */ }
+  }, 200);
+}
+['input', 'change'].forEach((ev) => $('#form-new').addEventListener(ev, (e) => {
+  if (['command', 'model', 'permissionMode', 'extraArgs'].includes(e.target.name)) refreshCmdPreview();
+}));
 dlg.querySelectorAll('input[name=type]').forEach((r) => r.onchange = syncTypeUI);
 $('#form-new').onsubmit = async (e) => {
   e.preventDefault();
@@ -756,6 +784,9 @@ $('#form-new').onsubmit = async (e) => {
       projectDir: f.get('projectDir') || undefined,
       command: f.get('command'),
       isolate: f.get('isolate') === 'on',
+      model: f.get('model'),
+      permissionMode: f.get('permissionMode'),
+      extraArgs: f.get('extraArgs'),
     });
     state.sessions.set(s.id, s); // 立即入库,不等 WS 广播,确保能直接打开
     dlg.close();

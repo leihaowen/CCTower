@@ -285,7 +285,19 @@ dialog h2 { font-size: 17px; margin-bottom: 16px; }
 .type-opt input { margin-top: 4px; accent-color: var(--amber); }
 .type-opt span { display: block; color: var(--faint); font-size: 11.5px; line-height: 1.4; }
 .field { display: block; margin-bottom: 12px; color: var(--muted); font-size: 12.5px; }
-.field input, .field textarea { width: 100%; margin-top: 4px; }
+.field input, .field textarea, .field select { width: 100%; margin-top: 4px; }
+.param-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.param-row .field { margin-bottom: 12px; }
+#claude-params .field select { cursor: pointer; }
+.cmd-preview {
+  background: #0e1013; border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; margin-bottom: 12px; display: flex; gap: 8px; align-items: baseline;
+}
+.cmd-preview .cmd-label { font-family: var(--mono); font-size: 10px; color: var(--faint); flex: 0 0 auto; letter-spacing: .1em; }
+.cmd-preview code {
+  font-family: var(--mono); font-size: 11px; color: #a9b1bd; line-height: 1.5;
+  word-break: break-all; white-space: pre-wrap;
+}
 .check { display: block; color: var(--muted); font-size: 12.5px; margin-bottom: 14px; }
 .check input { accent-color: var(--amber); margin-right: 6px; }
 .check em { display: block; font-style: normal; color: var(--faint); font-size: 11.5px; margin-left: 20px; }

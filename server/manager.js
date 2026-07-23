@@ -9,6 +9,15 @@ const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 const { writeHookSettings, writeMcpConfig, protocolPrompt } = require('./claudeSetup');
 const { computeDiff, squashMerge } = require('./gitReview');
 
+// 解析用户填写的附加参数:空格分隔,支持单/双引号包裹带空格的值
+function splitArgs(str) {
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(str)) !== null) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+
 const ATTENTION = new Set(['needs_decision', 'needs_permission', 'blocked', 'review_ready']);
 const BUFFER_CAP = 200_000;
 const STALE_MS = 10 * 60 * 1000;
@@ -105,7 +114,7 @@ class SessionManager {
 
   // ---------- creation ----------
 
-  createSession({ name, type, projectDir, command, isolate }) {
+  createSession({ name, type, projectDir, command, isolate, model, permissionMode, extraArgs }) {
     const id = crypto.randomBytes(5).toString('hex');
     projectDir = path.resolve(projectDir || process.cwd());
     if (!fs.existsSync(projectDir)) throw new Error(`目录不存在: ${projectDir}`);
@@ -118,6 +127,9 @@ class SessionManager {
       projectDir,
       cwd: projectDir,
       command: command || '',
+      model: type === 'claude' ? (model || '') : '', // 空=用 Claude Code 默认模型
+      permissionMode: type === 'claude' ? (permissionMode || '') : '', // '' | plan | acceptEdits | bypassPermissions
+      extraArgs: type === 'claude' ? (extraArgs || '') : '', // 附加原始参数(空格分隔,支持引号)
       isolate: type === 'claude' ? isolate !== false : false,
       claudeSessionId: null, // Claude Code 内部会话 id,来自 hook payload;重启时用于 --resume
       worktree: null,
@@ -221,6 +233,9 @@ class SessionManager {
       const mcpFile = writeMcpConfig(hooksDir, this.baseUrl, s.id, this.authToken);
       const argv = ['claude', '--settings', hooksFile, '--mcp-config', mcpFile,
         '--append-system-prompt', protocolPrompt(this.baseUrl, s.id)];
+      if (s.model) argv.push('--model', s.model);
+      if (s.permissionMode) argv.push('--permission-mode', s.permissionMode);
+      if (s.extraArgs) argv.push(...splitArgs(s.extraArgs));
       if (s.claudeSessionId) {
         // 重启走 resume:恢复原对话上下文,初始命令已在原对话里,不重发
         argv.push('--resume', s.claudeSessionId);
@@ -231,6 +246,17 @@ class SessionManager {
       return argv;
     }
     return [process.env.SHELL || 'bash'];
+  }
+
+  // 命令预览:根据表单参数拼出将要执行的 claude 命令(平台注入项用占位符),供创建页展示
+  previewArgv({ type, command, model, permissionMode, extraArgs }) {
+    if (type !== 'claude') return [process.env.SHELL || 'bash'];
+    const argv = ['claude', '--settings', '<hooks>', '--mcp-config', '<mcp>', '--append-system-prompt', '<CCTower 协议>'];
+    if (model) argv.push('--model', model);
+    if (permissionMode) argv.push('--permission-mode', permissionMode);
+    if (extraArgs) { try { argv.push(...splitArgs(extraArgs)); } catch { /* 忽略解析错误 */ } }
+    if (command) argv.push(command);
+    return argv;
   }
 
   _attachTmux(s) {
