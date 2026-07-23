@@ -113,7 +113,8 @@ app.post('/api/sessions', (req, res) => {
 
 // 创建页命令预览:不落地,仅回显将要执行的 argv
 app.post('/api/preview-command', (req, res) => {
-  res.json({ argv: manager.previewArgv(req.body || {}) });
+  try { res.json({ argv: manager.previewArgv(req.body || {}) }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // worktree session 的改动全览(含未提交与未跟踪文件)
@@ -168,20 +169,36 @@ app.post('/api/report/:id', (req, res) => {
   res.json({ ok });
 });
 
-// 目录浏览(新建 session 的 UI 选择器):只列子目录,标记 git 仓库
+// 目录浏览可访问的根:默认 home + 启动 cwd,可用 CCW_BROWSE_ROOTS(冒号分隔)覆盖。
+// 防止 /api/fs 被用来遍历整个文件系统。
+const BROWSE_ROOTS = (process.env.CCW_BROWSE_ROOTS
+  ? process.env.CCW_BROWSE_ROOTS.split(':')
+  : [require('os').homedir(), process.cwd()])
+  .filter(Boolean)
+  .map((r) => { try { return fs.realpathSync(path.resolve(r)); } catch { return path.resolve(r); } });
+function withinRoots(real) {
+  return BROWSE_ROOTS.some((root) => real === root || real.startsWith(root + path.sep));
+}
+
+// 目录浏览(新建 session 的 UI 选择器):只列子目录,标记 git 仓库,限制在允许的根内
 app.get('/api/fs', (req, res) => {
   try {
-    const p = path.resolve(String(req.query.path || '') || require('os').homedir());
-    const dirs = fs.readdirSync(p, { withFileTypes: true })
+    const requested = path.resolve(String(req.query.path || '') || BROWSE_ROOTS[0]);
+    // 解析真实路径(穿透符号链接)后再校验,防止 .. 或 symlink 逃逸
+    let real;
+    try { real = fs.realpathSync(requested); } catch { return res.status(400).json({ error: '目录不存在' }); }
+    if (!withinRoots(real)) return res.status(403).json({ error: '目录超出允许浏览的范围' });
+    const dirs = fs.readdirSync(real, { withFileTypes: true })
       .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
       .map((e) => {
         let isGit = false;
-        try { isGit = fs.existsSync(path.join(p, e.name, '.git')); } catch { /* 无权限 */ }
+        try { isGit = fs.existsSync(path.join(real, e.name, '.git')); } catch { /* 无权限 */ }
         return { name: e.name, isGit };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-    const parent = path.dirname(p);
-    res.json({ path: p, parent: parent !== p ? parent : null, isGit: fs.existsSync(path.join(p, '.git')), dirs });
+    const parent = path.dirname(real);
+    const hasParent = parent !== real && withinRoots(parent);
+    res.json({ path: real, parent: hasParent ? parent : null, isGit: fs.existsSync(path.join(real, '.git')), dirs, roots: BROWSE_ROOTS });
   } catch (e) {
     res.status(400).json({ error: String(e.message).split('\n')[0] });
   }

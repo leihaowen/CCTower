@@ -90,3 +90,23 @@ test('自动命名优先 Agent 上报 objective,OSC 标题不再覆盖', () => {
   assert.equal(s.name, '我的名字');
   clearTimeout(m._saveT);
 });
+
+test('extraArgs 拒绝覆盖平台自有/专用标志', () => {
+  const m = newManager();
+  for (const bad of ['--settings x', '--mcp-config x', '--append-system-prompt x', '--permission-mode plan', '--dangerously-skip-permissions', '--model opus']) {
+    assert.throws(
+      () => m.createSession({ type: 'claude', projectDir: os.tmpdir(), isolate: false, extraArgs: bad }),
+      /不允许包含/,
+      `应拒绝 ${bad}`
+    );
+  }
+  clearTimeout(m._saveT);
+});
+
+test('未知权限模式被拒绝,合法值放行', () => {
+  const m = newManager();
+  assert.throws(() => m.createSession({ type: 'claude', projectDir: os.tmpdir(), isolate: false, permissionMode: 'evil' }), /未知权限模式/);
+  const s = m.createSession({ type: 'claude', projectDir: os.tmpdir(), isolate: false, permissionMode: 'plan', extraArgs: '--verbose --add-dir ../x' });
+  assert.equal(s.permissionMode, 'plan');
+  clearTimeout(m._saveT);
+});

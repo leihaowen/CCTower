@@ -18,6 +18,22 @@ function splitArgs(str) {
   return out;
 }
 
+const PERMISSION_MODES = new Set(['', 'plan', 'acceptEdits', 'bypassPermissions']);
+// extraArgs 中禁止出现的标志:平台自有(会架空状态采集)或已有专用 UI 控件(避免绕过校验)
+const RESERVED_FLAGS = /^--?(settings|mcp-config|append-system-prompt|permission-mode|model|resume|dangerously-skip-permissions)(=|$)/;
+// 校验并规整 Claude 启动参数;非法输入直接抛错(创建/预览共用)
+function sanitizeClaudeArgs({ permissionMode, extraArgs }) {
+  const pm = permissionMode || '';
+  if (!PERMISSION_MODES.has(pm)) throw new Error(`未知权限模式:${pm}`);
+  const extra = splitArgs(extraArgs || '');
+  for (const a of extra) {
+    if (RESERVED_FLAGS.test(a)) {
+      throw new Error(`附加参数不允许包含 ${a}:该项由平台管理或已有专用选项`);
+    }
+  }
+  return { permissionMode: pm, extra };
+}
+
 const ATTENTION = new Set(['needs_decision', 'needs_permission', 'blocked', 'review_ready']);
 const BUFFER_CAP = 200_000;
 const STALE_MS = 10 * 60 * 1000;
@@ -118,6 +134,7 @@ class SessionManager {
     const id = crypto.randomBytes(5).toString('hex');
     projectDir = path.resolve(projectDir || process.cwd());
     if (!fs.existsSync(projectDir)) throw new Error(`目录不存在: ${projectDir}`);
+    if (type === 'claude') sanitizeClaudeArgs({ permissionMode, extraArgs }); // 非法参数在此抛错
     const s = {
       id,
       name: name || (type === 'claude' ? `Claude ${id.slice(0, 4)}` : `Terminal ${id.slice(0, 4)}`),
@@ -234,8 +251,9 @@ class SessionManager {
       const argv = ['claude', '--settings', hooksFile, '--mcp-config', mcpFile,
         '--append-system-prompt', protocolPrompt(this.baseUrl, s.id)];
       if (s.model) argv.push('--model', s.model);
-      if (s.permissionMode) argv.push('--permission-mode', s.permissionMode);
-      if (s.extraArgs) argv.push(...splitArgs(s.extraArgs));
+      const { permissionMode, extra } = sanitizeClaudeArgs({ permissionMode: s.permissionMode, extraArgs: s.extraArgs });
+      if (permissionMode) argv.push('--permission-mode', permissionMode);
+      argv.push(...extra);
       if (s.claudeSessionId) {
         // 重启走 resume:恢复原对话上下文,初始命令已在原对话里,不重发
         argv.push('--resume', s.claudeSessionId);
@@ -251,10 +269,11 @@ class SessionManager {
   // 命令预览:根据表单参数拼出将要执行的 claude 命令(平台注入项用占位符),供创建页展示
   previewArgv({ type, command, model, permissionMode, extraArgs }) {
     if (type !== 'claude') return [process.env.SHELL || 'bash'];
+    const { permissionMode: pm, extra } = sanitizeClaudeArgs({ permissionMode, extraArgs }); // 非法输入抛错,前端提示
     const argv = ['claude', '--settings', '<hooks>', '--mcp-config', '<mcp>', '--append-system-prompt', '<CCTower 协议>'];
     if (model) argv.push('--model', model);
-    if (permissionMode) argv.push('--permission-mode', permissionMode);
-    if (extraArgs) { try { argv.push(...splitArgs(extraArgs)); } catch { /* 忽略解析错误 */ } }
+    if (pm) argv.push('--permission-mode', pm);
+    argv.push(...extra);
     if (command) argv.push(command);
     return argv;
   }

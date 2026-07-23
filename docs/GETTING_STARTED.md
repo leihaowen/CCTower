@@ -95,6 +95,7 @@ npm start            # 启动,默认 http://127.0.0.1:7080
 | `CCW_ALLOWED_HOSTS` | 空 | 额外允许的 `host:port`(反向代理域名),逗号分隔 |
 | `CCW_DATA_DIR` | `./.ccw-data` | 数据目录(会话、worktree、hooks、配置) |
 | `CCW_BACKEND` | `auto` | `auto` 优先 tmux;`pty` 强制直接 PTY |
+| `CCW_BROWSE_ROOTS` | home + 启动目录 | 目录浏览器可访问的根,冒号分隔;超出范围的路径返回 403 |
 
 示例:
 
@@ -118,6 +119,8 @@ CCW_PORT=8123 CCW_TOKEN=$(openssl rand -hex 16) npm start
   首次打开网页会提示输入令牌(存 localStorage);令牌经 WebSocket 子协议传输,不落进 URL/日志。
 - **权限模式 `bypassPermissions` 会放行 agent 的一切操作**(含删除、执行任意命令)。用它时务必配合独立 worktree 隔离;拿不准就用默认"每次询问",在网页上逐次批准。
 - 终端逐键输入**不落盘**(可能含密码);只有显式的决策/权限/合并操作会记入时间线。
+- 目录浏览接口只允许访问 home 与启动目录(或 `CCW_BROWSE_ROOTS`),经真实路径校验,防止遍历整机文件系统。
+- 创建会话的"附加参数"会拒绝覆盖平台自有标志(`--settings` / `--mcp-config` / `--append-system-prompt` / `--permission-mode` 等),避免绕过状态采集与权限控制;权限模式仅接受已知取值。
 - `.ccw-data/` 含 hooks 配置、会话状态,已被 `.gitignore` 忽略;凭据类文件以 `0600` 权限写入。
 
 ---
