@@ -14,15 +14,24 @@ function write(dir, f, content) {
 }
 function commitAll(dir, msg) { run(['add', '-A'], dir); run(['commit', '-m', msg], dir); }
 
+// 测试期间创建的临时目录,结束后统一清理(否则每次 npm test 都在 /tmp 泄漏夹具)
+const TMP_FIXTURES = [];
+test.after(() => {
+  for (const d of TMP_FIXTURES) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* 尽力 */ } }
+});
+
 // 真实 git 仓库 + 真实 worktree,与生产结构一致(worktree 在 projectDir 之外)
 function makeFixture() {
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccw-proj-'));
+  TMP_FIXTURES.push(projectDir);
   run(['init', '-b', 'main'], projectDir);
   run(['config', 'user.email', 'test@ccw'], projectDir);
   run(['config', 'user.name', 'ccw-test'], projectDir);
   write(projectDir, 'a.txt', 'line1\nline2\n');
   commitAll(projectDir, 'init');
-  const worktree = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccw-wt-')), 's1');
+  const wtRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccw-wt-'));
+  TMP_FIXTURES.push(wtRoot);
+  const worktree = path.join(wtRoot, 's1');
   run(['worktree', 'add', worktree, '-b', 'ccw/s1'], projectDir);
   return { projectDir, worktree, branch: 'ccw/s1' };
 }
