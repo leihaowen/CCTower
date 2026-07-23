@@ -74,6 +74,13 @@ class SessionManager {
   }
 
   _event(s, kind, text, source = '系统观测') {
+    // 连续重复事件折叠为一条(计数),防止周期性噪音刷满时间线
+    const last = s.events[s.events.length - 1];
+    if (last && last.kind === kind && last.text === text) {
+      last.at = new Date().toISOString();
+      last.count = (last.count || 1) + 1;
+      return;
+    }
     s.events.push({ at: new Date().toISOString(), kind, text, source });
     if (s.events.length > 200) s.events.splice(0, s.events.length - 200);
   }
@@ -433,18 +440,25 @@ class SessionManager {
     return true;
   }
 
-  // 终端标题变化:记录;Claude 会话且用户未手动命名时,自动跟随 Claude 的会话命名
+  // 终端标题变化:Claude 会话且用户未手动命名时,自动跟随 Claude 的会话命名。
+  // 标题会在工作/空闲形态间抖动,须稳定 10 秒才应用;同一名字只记一次事件。
   _onTitle(s, title) {
     const clean = String(title || '').replace(/^[\s✳✶✻·*∴◐◑◒◓-]+/, '').trim().slice(0, 60);
     if (!clean || clean === s.termTitle) return;
     s.termTitle = clean;
-    if (s.type === 'claude' && !s.customNamed && !/^claude$/i.test(clean)) {
-      if (s.name !== clean) {
+    const rt = this.runtime.get(s.id);
+    if (!rt || s.type !== 'claude' || s.customNamed || /^claude$/i.test(clean)) return;
+    clearTimeout(rt.titleT);
+    rt.titleT = setTimeout(() => {
+      if (s.termTitle !== clean || s.customNamed || s.name === clean) return;
+      s.name = clean;
+      rt.autoNamed = rt.autoNamed || [];
+      if (!rt.autoNamed.includes(clean)) {
+        rt.autoNamed = [clean, ...rt.autoNamed].slice(0, 3);
         this._event(s, 'lifecycle', `会话自动命名:${clean}(来自 Claude 标题上报)`);
-        s.name = clean;
       }
-    }
-    this._touch(s);
+      this._touch(s);
+    }, 10_000);
   }
 
   // 网页端批准/拒绝权限:向 TUI 权限对话框发送按键(1=允许第一项,Esc=拒绝)

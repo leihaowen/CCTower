@@ -689,7 +689,7 @@ function updatePanels(s) {
     <div class="timeline">${evs.map((e) => `
       <div class="tl-item k-${esc(e.kind)}">
         <div class="tl-time">${new Date(e.at).toLocaleTimeString()} <span class="tl-src">· ${esc(e.source)}</span></div>
-        <div class="tl-text">${esc(e.text)}</div>
+        <div class="tl-text">${esc(e.text)}${e.count > 1 ? ` <span class="tl-src">×${e.count}</span>` : ''}</div>
       </div>`).join('') || '<div class="tl-item"><div class="tl-text">暂无事件</div></div>'}</div>`;
 }
 
