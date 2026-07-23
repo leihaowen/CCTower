@@ -1,0 +1,47 @@
+# CCTower systemd 服务模板
+# ------------------------------------------------------------------
+# 用法(推荐 user 服务,以你自己的账号运行,能正确拉起 claude CLI):
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/cctower.service ~/.config/systemd/user/cctower.service
+#   # 把下面 3 个 __占位符__ 换成你的实际值(见 deploy/README.md)
+#   ${EDITOR:-vi} ~/.config/systemd/user/cctower.service
+#   loginctl enable-linger "$USER"          # 不登录也常驻、重启后自动起
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now cctower
+#
+# 占位符:
+#   __CCTOWER_DIR__ = 仓库绝对路径,如 /home/alice/CCTower
+#   __NODE_BIN__    = node 绝对路径,`command -v node` 查(如 /usr/bin/node)
+#   __PATH__        = 你 shell 的 PATH,`echo $PATH` 查;务必含 claude/git 所在目录
+# ------------------------------------------------------------------
+
+[Unit]
+Description=CCTower (Claude Code Tower) web workbench
+After=network-online.target
+Wants=network-online.target
+# 崩溃循环保护:60 秒内最多重启 5 次,超限进入 failed(systemctl reset-failed 可恢复)
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+WorkingDirectory=__CCTOWER_DIR__
+ExecStart=__NODE_BIN__ __CCTOWER_DIR__/server/index.js
+# 进程无论因何退出都自动拉起
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+# node 收到 SIGTERM 正常退出记 143,视为成功停止
+SuccessExitStatus=0 143
+KillMode=control-group
+# 关键:node-pty 需要带完整 PATH 才能启动 claude / git
+Environment=TMPDIR=/tmp
+Environment=PATH=__PATH__
+Environment=CCW_PORT=7080
+Environment=CCW_HOST=127.0.0.1
+# 对外暴露时再取消注释并设强令牌(详见 docs/GETTING_STARTED.md 第 6 节)
+# Environment=CCW_TOKEN=please-change-me
+
+[Install]
+WantedBy=default.target

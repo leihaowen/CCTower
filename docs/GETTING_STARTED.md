@@ -159,6 +159,8 @@ git pull && npm install   # 升级后如依赖有变
 
 升级 CCTower:`git pull` 后重启服务。**有 tmux 的话,运行中的会话不受影响**,重启后自动接管;Claude 会话还会用 `--resume` 恢复原对话上下文。
 
+想让 CCTower 常驻(崩溃自动拉起、开机自启),用 systemd 托管:见 **[deploy/README.md](../deploy/README.md)**,内含 unit 模板与一键替换命令。
+
 ---
 
 ## 9. 数据与目录速览
