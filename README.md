@@ -13,6 +13,8 @@ npm start          # http://127.0.0.1:7080
 
 依赖:Node.js ≥ 20、git、已登录的 [Claude Code](https://claude.com/claude-code) CLI;建议安装 tmux(见下)。
 
+> 📖 第一次使用?看 **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)**——完整依赖、快速上手、配置与安全须知、常见问题。
+
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
 | `CCW_PORT` | `7080` | 监听端口 |
