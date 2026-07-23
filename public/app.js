@@ -47,6 +47,8 @@ function ago(iso) {
 function dirTail(p) { const parts = (p || '').split('/').filter(Boolean); return parts.slice(-2).join('/'); }
 const authToken = () => localStorage.getItem('ccwToken') || '';
 const authHeaders = () => (authToken() ? { 'X-CCW-Token': authToken() } : {});
+// WS 协议跟随页面:HTTPS 反代下必须用 wss,否则浏览器按混合内容拦截
+const WS_BASE = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
 // WS 令牌走 Sec-WebSocket-Protocol 子协议(base64url),不进 URL,避免泄漏到日志/历史
 const wsProto = () => {
   const t = authToken();
@@ -80,7 +82,7 @@ async function readClipboard() {
 let eventsWs = null;
 function connectEvents() {
   if (eventsWs && (eventsWs.readyState === 0 || eventsWs.readyState === 1)) return;
-  const ws = new WebSocket(`ws://${location.host}/ws/events`, wsProto());
+  const ws = new WebSocket(`${WS_BASE}/ws/events`, wsProto());
   eventsWs = ws;
   ws.onopen = () => $('#connbar').hidden = true;
   ws.onmessage = (e) => {
@@ -598,7 +600,7 @@ function renderWorkspace() {
   let controller = false;
   const connectTerm = (replay) => {
     if (replay && term) term.reset(); // 重连时服务端会整体回放缓冲区,先清屏避免重复
-    termWs = new WebSocket(`ws://${location.host}/ws/term/${s.id}`, wsProto());
+    termWs = new WebSocket(`${WS_BASE}/ws/term/${s.id}`, wsProto());
     termWs.onmessage = (e) => {
       const m = JSON.parse(e.data);
       if (m.type === 'data') term.write(m.data);
