@@ -290,3 +290,17 @@ setInterval(() => {
 server.listen(PORT, HOST, () => {
   console.log(`CCTower 已启动: ${BASE}`);
 });
+
+// 优雅退出:收到 systemd/Ctrl-C 的信号时,先把会话状态同步落盘再退出。
+// tmux 托管的会话进程不在此结束——它们会在下次启动时被自动接管(前提:systemd 用 KillMode=process)。
+let shuttingDown = false;
+function gracefulShutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`CCTower 收到 ${sig},保存状态后退出(tmux 会话保留,重启自动接管)`);
+  try { manager.dispose(); } catch { /* 已尽力落盘 */ }
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 2000).unref(); // 兜底:2s 内没关完也退,避免拖到 systemd 超时被 SIGKILL
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

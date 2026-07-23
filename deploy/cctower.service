@@ -34,7 +34,9 @@ RestartSec=3
 TimeoutStopSec=30
 # node 收到 SIGTERM 正常退出记 143,视为成功停止
 SuccessExitStatus=0 143
-KillMode=control-group
+# 关键:只结束主进程 node,不牵连 cgroup 里的 tmux server。
+# 否则 stop/restart 会连同 tmux 一起杀掉,所有会话丢失——CCTower 靠 tmux 存活跨重启。
+KillMode=process
 # 关键:node-pty 需要带完整 PATH 才能启动 claude / git
 Environment=TMPDIR=/tmp
 Environment=PATH=__PATH__

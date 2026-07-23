@@ -57,8 +57,28 @@ class SessionManager {
   }
 
   _load() {
+    let raw;
     try {
-      const arr = JSON.parse(fs.readFileSync(this.stateFile, 'utf8'));
+      raw = fs.readFileSync(this.stateFile, 'utf8');
+    } catch {
+      return; // 文件不存在:首次启动
+    }
+    let arr;
+    try {
+      arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) throw new Error('不是数组');
+    } catch (e) {
+      // 文件存在却损坏/为空:备份留档,绝不静默丢弃(否则会话元数据永久丢失、无法 --resume)
+      if (raw.length > 0) {
+        try {
+          const bak = `${this.stateFile}.corrupt-${Date.now()}`;
+          fs.writeFileSync(bak, raw, { mode: 0o600 });
+          console.error(`[CCTower] sessions.json 解析失败,已备份到 ${bak}:${e.message}`);
+        } catch { /* 备份失败也不阻塞启动 */ }
+      }
+      return;
+    }
+    try {
       for (const s of arr) {
         this.sessions.set(s.id, s);
         if (!s.alive) continue;
@@ -78,15 +98,37 @@ class SessionManager {
             : '服务重启,原进程已结束;可点击「重启」继续';
         }
       }
-    } catch { /* first boot */ }
+    } catch { /* 单条会话接管失败不影响其余会话加载 */ }
+  }
+
+  // 原子落盘:先写临时文件 + fsync,再 rename 替换。任何时刻 sessions.json 要么是旧的
+  // 完整内容、要么是新的完整内容,绝不会出现被 truncate 成 0 字节/半截的损坏态。
+  _writeState() {
+    const arr = [...this.sessions.values()];
+    const tmp = `${this.stateFile}.tmp`;
+    const fd = fs.openSync(tmp, 'w', 0o600);
+    try {
+      fs.writeSync(fd, JSON.stringify(arr, null, 2));
+      fs.fsyncSync(fd); // 强制落盘,防崩溃/断电时丢数据
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, this.stateFile); // 同一文件系统上 rename 原子
   }
 
   _save() {
     clearTimeout(this._saveT);
     this._saveT = setTimeout(() => {
-      const arr = [...this.sessions.values()];
-      fs.writeFileSync(this.stateFile, JSON.stringify(arr, null, 2), { mode: 0o600 });
+      try { this._writeState(); } catch (e) { console.error(`[CCTower] 保存 sessions.json 失败:${e.message}`); }
     }, 200);
+  }
+
+  // 进程退出前调用:同步冲刷挂起的保存(否则 200ms 去重窗口内的最新状态会随进程一起丢失)。
+  // 注意:不结束任何 tmux 会话——它们要在服务重启后被重新接管。
+  dispose() {
+    clearInterval(this._staleTimer);
+    if (this._saveT) { clearTimeout(this._saveT); this._saveT = null; }
+    try { this._writeState(); } catch (e) { console.error(`[CCTower] 退出前保存失败:${e.message}`); }
   }
 
   list() { return [...this.sessions.values()]; }
