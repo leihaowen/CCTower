@@ -8,10 +8,17 @@ export function tauriSpawn() {
   return (args) => {
     const cmd = Command.create('ssh-tunnel', args);
     const exitCbs = [], errCbs = [];
-    let child = null, wantKill = false;
+    let child = null, wantKill = false, exited = false;
+    // spawn 失败必须走 onExit,否则隧道卡在 connecting 永不重试:
+    // 'error'(ACL 拒绝、找不到可执行文件等)和 spawn() 被 reject 都得触发一次退出回调,
+    // 用非零 code 让 Tunnel 走 retrying(除非 stderr 命中 AUTH_FAIL_RE)。
+    const fireExit = (code) => { if (exited) return; exited = true; exitCbs.forEach((f) => f(code)); };
     cmd.stderr.on('data', (line) => errCbs.forEach((f) => f(String(line))));
-    cmd.on('close', (data) => exitCbs.forEach((f) => f(data.code)));
-    cmd.spawn().then((c) => { child = c; if (wantKill) c.kill(); });
+    cmd.on('error', (err) => { errCbs.forEach((f) => f(String(err))); fireExit(-1); });
+    cmd.on('close', (data) => fireExit(data.code));
+    cmd.spawn()
+      .then((c) => { child = c; if (wantKill) c.kill(); })
+      .catch((err) => { errCbs.forEach((f) => f(String(err))); fireExit(-1); });
     return {
       kill: () => { wantKill = true; if (child) child.kill(); },
       onExit: (cb) => exitCbs.push(cb),
