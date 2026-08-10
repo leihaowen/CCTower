@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - Node ≥ 20;根仓库保持 CommonJS,`desktop/` 独立 package.json 用 `"type": "module"`
+- desktop 测试脚本用 `node --test "test/*.test.js"`(裸目录参数在 Node 24 有 MODULE_NOT_FOUND bug)
 - 只用 Tauri 2 稳定 API 与官方插件,不用 unstable 特性(multiwebview 等)
 - 一切用户可见文案用中文;代码注释风格与根仓库一致(说约束,不说来历)
 - ssh 别名必须过白名单正则(防参数注入),argv 中别名前必须有 `--`
