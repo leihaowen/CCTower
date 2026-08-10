@@ -114,6 +114,12 @@ async function refreshTray() {
   if (trayBusy) return; trayBusy = true;
   try {
     await updateTray(buildTrayModel(runtime.servers, runtime.tunnelStates, runtime.watcher), {
+      onOpenWindow: async () => {
+        // 托盘顶部的无条件入口:零服务器时也能唤起主窗口去填"添加服务器"表单
+        const win = getCurrentWindow();
+        await win.show();
+        await win.setFocus();
+      },
       onOpen: async (id) => {
         // M2:托盘"打开"从 M1 的系统浏览器兜底(@tauri-apps/plugin-shell 的 open())
         // 改为唤起主窗口并切到对应服务器

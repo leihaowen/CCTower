@@ -110,7 +110,7 @@ webhook(默认关闭)。
 ## 测试
 
 ```bash
-npm test    # node:test,29 个用例(状态机 / resume / MCP 协议 / gitReview / 暴露面校验)
+npm test    # node:test,44 个用例(状态机 / resume / MCP 协议 / gitReview / 暴露面校验)
 ```
 
 ## License

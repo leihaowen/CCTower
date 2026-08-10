@@ -13,6 +13,11 @@ test('normalizeServer:拒绝注入形态的别名', () => {
   }
 });
 
+test('normalizeServer:表单空串端口视为未填,默认 7080', () => {
+  const s = normalizeServer({ sshAlias: 'x', remotePort: '' });
+  assert.equal(s.remotePort, 7080);
+});
+
 test('normalizeServer:端口越界拒绝', () => {
   assert.throws(() => normalizeServer({ sshAlias: 'x', remotePort: 0 }));
   assert.throws(() => normalizeServer({ sshAlias: 'x', remotePort: 65536 }));

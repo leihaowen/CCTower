@@ -7,7 +7,8 @@ export function normalizeServer(input = {}) {
   if (!ALIAS_RE.test(sshAlias)) {
     throw new Error(`ssh 别名不合法:「${sshAlias}」。仅允许字母数字与 . _ -,且首字符必须是字母数字`);
   }
-  const remotePort = Number(input.remotePort ?? 7080);
+  // 表单空串等同未填,走默认端口:Object.fromEntries(formData) 拿到的是 ''而非 undefined
+  const remotePort = input.remotePort === '' || input.remotePort == null ? 7080 : Number(input.remotePort);
   if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) {
     throw new Error(`远端端口不合法:${input.remotePort}`);
   }
