@@ -24,7 +24,12 @@ Claude/终端会话。经评估否决了"纯 SSH 客户端"(会失去服务端�
 
 ## 核心原则
 
-1. **服务端零改动**。壳只消费现有 HTTP/WS 接口。
+1. **服务端仅一处向后兼容放宽,其余零改动**。`isLocalRequest` 需接受
+   任意端口的回环 Host/Origin:隧道的本地端口 ≠ 远端 7080(多台服务器
+   remotePort 相同,本地必须各分配端口),且 Tauri webview 的 Origin 是
+   `tauri://localhost`,现有白名单两者都会拒绝。该放宽不减弱安全——
+   Host 校验本就不是网络层认证(见 SECURITY.md 信任模型),攻击者伪造
+   Host 从来挡不住;真正的边界(令牌)与非回环 Origin 的拦截保持不变。
 2. **UI 不打包进客户端**。每台服务器的页面通过隧道加载它自己伺服的前端,
    服务器间版本不一致不会坏,没有版本矩阵。
 3. **不碰密钥**。隧道 spawn 系统 `ssh`,认证完全交给 ssh-agent / `~/.ssh/config`。
@@ -100,8 +105,10 @@ desktop/
 
 ## 与服务端的契约(唯一耦合点)
 
-watcher 只依赖两类 WS 广播消息(已对照 `server/index.js` 现有实现核实):
+watcher 只依赖三类 WS 消息(已对照 `server/index.js` 现有实现核实):
 
+- `{type:'snapshot', sessions:[{id, status, …}]}` —— 连接建立时的全量
+  初始状态(服务端已有行为)
 - `{type:'notify', id, name, reason, statusLine}` —— 触发系统通知
 - `{type:'session', session:{id, status, …}}`(删除时为
   `session:{id, deleted:true}`)—— 维护状态表与角标
