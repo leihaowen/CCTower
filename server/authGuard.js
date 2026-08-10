@@ -58,4 +58,13 @@ function tokenMatches(provided, expected) {
   return crypto.timingSafeEqual(a, b);
 }
 
-module.exports = { auditExposure, isLoopbackHost, tokenMatches, MIN_TOKEN_LEN };
+// Host 头 / Origin host 的回环判定,端口任意。给桌面壳的 SSH 隧道用:
+// 隧道本地端口 ≠ 远端端口,Tauri webview 的 Origin 是 tauri://localhost,
+// 固定端口白名单两者都会误拒。Host 本就不是网络层认证(见 SECURITY.md),
+// 放宽到"任意端口的回环"不改变信任模型。
+const LOOPBACK_HEADER_RE = /^(localhost|[a-z0-9-]+\.localhost|127(?:\.\d{1,3}){3}|\[::1\])(:\d{1,5})?$/i;
+function isLoopbackHostHeader(host) {
+  return LOOPBACK_HEADER_RE.test(String(host || '').trim());
+}
+
+module.exports = { auditExposure, isLoopbackHost, tokenMatches, MIN_TOKEN_LEN, isLoopbackHostHeader };
