@@ -100,3 +100,48 @@ test('stop:杀进程、取消定时器,退出后回 idle 不再重连', async ()
   assert.equal(t.state, 'idle');
   assert.equal(timers.pending(), 0);
 });
+
+test('探活在途时子进程退出重连:过期结果被丢弃', async () => {
+  const timers = makeTimers();
+  const sp = makeSpawner();
+  const states = [];
+  let deferredResolve;
+  let probeCalls = 0;
+  const probe = () => {
+    probeCalls++;
+    if (probeCalls === 1) {
+      // 老一代子进程的探活:手动可控,不立即 resolve
+      return new Promise((resolve) => { deferredResolve = resolve; });
+    }
+    return Promise.resolve(true); // 新一代子进程的探活:立刻成功
+  };
+  const t = new Tunnel({
+    server: { id: 'a', name: 'a', sshAlias: 'a', remotePort: 7080, token: '', enabled: true },
+    localPort: 17080,
+    spawn: sp.spawn,
+    probe,
+    onState: (s, d) => states.push([s, d]),
+    setTimer: timers.setTimer, clearTimer: timers.clearTimer,
+  });
+
+  t.start(); // connecting,spawn#1,安排第一次探活
+  const pending = timers.fire(); // 触发探活,内部在 await this._probe(...) 处挂起
+  assert.equal(sp.calls.length, 1);
+
+  sp.child().emitExit(1); // 老子进程退出 → retrying,安排重连定时器
+  assert.equal(t.state, 'retrying');
+
+  await timers.fire(); // 触发重连 → _launch() 生成新一代子进程(spawn#2)
+  assert.equal(sp.calls.length, 2);
+  assert.equal(t.state, 'connecting');
+
+  deferredResolve(true); // 老探活此刻才 resolve(true)
+  await pending; // 等老 _runProbe 走完:世代号不匹配,应提前返回,不改变状态
+
+  assert.equal(t.state, 'connecting'); // 未被过期结果拉去 'up'
+  assert.equal(sp.calls.length, 2); // 没有额外重连
+
+  await timers.fire(); // 新一代子进程自己的探活(立刻成功)
+  assert.equal(t.state, 'up');
+  assert.equal(sp.calls.length, 2);
+});

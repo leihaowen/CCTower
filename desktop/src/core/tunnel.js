@@ -17,6 +17,7 @@ export class Tunnel {
     this._delayFn = delayFn; this._setTimer = setTimer; this._clearTimer = clearTimer;
     this._attempt = 0; this._probeFails = 0; this._stderrTail = '';
     this._child = null; this._timer = null; this._stopped = false;
+    this._gen = 0; // 子进程世代号:探活结果只对发起它的那一代子进程有效,跨重连的过期结果直接丢弃
   }
 
   start() { this._stopped = false; this._launch(); }
@@ -35,6 +36,7 @@ export class Tunnel {
   }
 
   _launch() {
+    this._gen++;
     this._set('connecting');
     this._stderrTail = ''; this._probeFails = 0;
     this._child = this._spawn(sshTunnelArgs(this.server, this.localPort));
@@ -57,8 +59,10 @@ export class Tunnel {
 
   async _runProbe() {
     if (this._stopped || !this._child) return;
+    const gen = this._gen;
     const ok = await this._probe(this.localPort).catch(() => false);
-    if (this._stopped || !this._child) return;
+    // 探活结果只对发起它的那一代子进程有效,跨重连的过期结果直接丢弃
+    if (this._stopped || !this._child || gen !== this._gen) return;
     if (ok) { this._attempt = 0; this._probeFails = 0; this._set('up'); }
     else if (++this._probeFails >= PROBE_GRACE) this._set('server-down');
     this._scheduleProbe();
