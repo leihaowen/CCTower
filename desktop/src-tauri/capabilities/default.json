@@ -6,6 +6,9 @@
   "permissions": [
     "core:default",
     "core:app:allow-default-window-icon",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
     "notification:default",
     "store:default",
     "process:allow-exit",

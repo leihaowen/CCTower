@@ -1,0 +1,189 @@
+/* M2 主窗口:侧栏固定宽度 + 内容区铺满 + iframe 无边框铺满 */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif;
+  color: #0f0f0f;
+  background: #f6f6f6;
+}
+
+body {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* 左栏:固定 240px,服务器列表 + 添加表单 */
+#sidebar {
+  width: 240px;
+  flex: 0 0 240px;
+  display: flex;
+  flex-direction: column;
+  background: #ececec;
+  border-right: 1px solid #d8d8d8;
+  overflow-y: auto;
+}
+
+#server-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.server-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.server-row:hover {
+  background: #e2e2e2;
+}
+
+.server-row.active {
+  background: #d8e6ff;
+}
+
+.server-row .name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 状态点:绿(up)/黄(server-down)/红(auth-failed)/灰(其余) */
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: #9a9a9a; /* 默认灰,覆盖 idle/connecting/retrying */
+}
+
+.dot-up {
+  background: #2ecc71;
+}
+
+.dot-down {
+  background: #f1c40f;
+}
+
+.dot-err {
+  background: #e74c3c;
+}
+
+.badge {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #e74c3c;
+  color: #fff;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.server-row button {
+  margin-left: auto;
+  font-size: 12px;
+}
+
+/* 添加表单 */
+#add-form {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-top: 1px solid #d8d8d8;
+}
+
+#add-form h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: #555;
+}
+
+#add-form input,
+#add-form button {
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+#add-form button {
+  cursor: pointer;
+  background: #396cd8;
+  color: #fff;
+  border-color: #396cd8;
+}
+
+#form-error {
+  margin: 0;
+  color: #e74c3c;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+/* 右侧内容区:铺满剩余空间,iframe 无边框铺满 */
+#content {
+  flex: 1 1 auto;
+  position: relative;
+  background: #fff;
+}
+
+#content iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  html,
+  body {
+    color: #f0f0f0;
+    background: #1e1e1e;
+  }
+
+  #sidebar {
+    background: #262626;
+    border-right-color: #3a3a3a;
+  }
+
+  .server-row {
+    border-bottom-color: #333;
+  }
+
+  .server-row:hover {
+    background: #303030;
+  }
+
+  .server-row.active {
+    background: #2c4a7a;
+  }
+
+  #add-form {
+    border-top-color: #3a3a3a;
+  }
+
+  #add-form input {
+    background: #1e1e1e;
+    border-color: #444;
+    color: #f0f0f0;
+  }
+
+  #content {
+    background: #1e1e1e;
+  }
+}
