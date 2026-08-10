@@ -284,9 +284,9 @@ test('sshTunnelArgs:argv 精确匹配,别名前有 --', () => {
   ]);
 });
 
-test('sshStartArgs:远程一键启动命令', () => {
+test('sshStartArgs:远程一键启动命令(带 keepalive,防远端挂起无限等)', () => {
   const s = normalizeServer({ sshAlias: 'prod-1' });
-  assert.deepEqual(sshStartArgs(s), ['-o', 'BatchMode=yes', '--', 'prod-1', 'systemctl --user start cctower']);
+  assert.deepEqual(sshStartArgs(s), ['-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', '--', 'prod-1', 'systemctl --user start cctower']);
 });
 ```
 
@@ -320,7 +320,10 @@ export function sshTunnelArgs(server, localPort) {
 }
 
 export function sshStartArgs(server) {
-  return ['-o', 'BatchMode=yes', '--', server.sshAlias, 'systemctl --user start cctower'];
+  // 一次性远程命令也要 keepalive:远端无响应时靠它超时退出,而不是无限挂住。
+  // 不带 ExitOnForwardFailure —— 没有端口转发,该选项无意义
+  return ['-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
+    '--', server.sshAlias, 'systemctl --user start cctower'];
 }
 ```
 
