@@ -12,7 +12,8 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
-    "vite": "^8.2.1"
+    "vite": "^8.2.1",
+    "ws": "^8.21.3"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
