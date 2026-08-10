@@ -4,6 +4,18 @@
 
 > A web control tower for parallel Claude Code sessions: isolated git-worktree "runways" per agent, an attention inbox that only calls you when a decision, permission, or failure needs a human.
 
+> [!WARNING]
+> **CCTower 按设计就能在运行它的机器上执行任意命令**——它创建终端会话、运行你给的命令、
+> 并可以用 `bypassPermissions` 启动 agent。请把它当作「你自己的 shell 的网页入口」来对待:
+>
+> - 默认只监听 `127.0.0.1`,本机自用无需额外配置。
+> - **一旦配置成对外可达**(`CCW_HOST` 非回环,或设了 `CCW_ALLOWED_HOSTS`),必须设 `CCW_TOKEN`,
+>   否则服务会拒绝启动。别把它直接暴露在公网上。
+> - 不要让 CCTower 里的 agent 去处理你不信任的代码库:agent 持有的回调令牌目前是全权令牌
+>   (见 [SECURITY.md](SECURITY.md) 的「已知限制」)。
+>
+> 仅支持 Linux / macOS(依赖 node-pty 与 tmux);Windows 需在 WSL 内运行。
+
 ## 运行
 
 ```bash
@@ -20,9 +32,9 @@ npm start          # http://127.0.0.1:7080
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
 | `CCW_PORT` | `7080` | 监听端口 |
-| `CCW_HOST` | `127.0.0.1` | 监听地址;对外部署必须同时配 `CCW_TOKEN` |
-| `CCW_TOKEN` | 空 | 访问令牌,设置后 API/WS 均需携带(网页会提示输入) |
-| `CCW_ALLOWED_HOSTS` | 空 | 额外允许的 `host:port`(反向代理域名),逗号分隔 |
+| `CCW_HOST` | `127.0.0.1` | 监听地址;非回环地址**必须**同时配 `CCW_TOKEN`,否则拒绝启动 |
+| `CCW_TOKEN` | 空 | 访问令牌,设置后 API/WS 均需携带(网页会提示输入);对外部署时必填,建议 ≥16 位随机串 |
+| `CCW_ALLOWED_HOSTS` | 空 | 额外允许的 `host:port`(反向代理域名),逗号分隔;**非空时同样强制要求 `CCW_TOKEN`** |
 | `CCW_DATA_DIR` | `./.ccw-data` | 会话数据、worktree、hooks 配置目录 |
 | `CCW_BACKEND` | `auto` | `auto` 优先 tmux 托管;`pty` 强制直接 PTY |
 
@@ -74,17 +86,33 @@ tmux -L ccw(会话跑在这里,服务死了它们还活着)
 
 ## 安全
 
-- 默认只绑定 localhost;API/WS 校验 Host 与 Origin(防 CSRF / DNS rebinding)
-- 可选 `CCW_TOKEN` 认证,常数时间比较;hooks/MCP 回调自动携带
+- 默认只绑定 localhost;API/WS 校验 Host 与 Origin(防浏览器发起的 CSRF / DNS rebinding)
+- **对外可达时强制令牌**:`CCW_HOST` 非回环或配了 `CCW_ALLOWED_HOSTS` 而没设 `CCW_TOKEN` 时,
+  服务拒绝启动(Host 头是请求方可控的,挡不住 `curl`——令牌是对外部署唯一的认证边界)
+- `CCW_TOKEN` 常数时间比较;hooks/MCP 回调自动携带,经 WebSocket 子协议传输,不进 URL/日志
 - 摘要模型输入最小化(近期事件 + 屏幕尾部);摘要文本永不自动执行
 - 终端逐键输入不落盘(可能含密码),仅显式的决策/权限操作记录在案
+
+**数据会离开本机的两处**,都需要你显式开启或知情:AI 归纳会把近期事件与终端画面尾部
+(约 1500 字符)发给 Claude,并消耗你自己的额度;飞书通知会把任务目标与状态行发到你配置的
+webhook(默认关闭)。
+
+完整信任模型、已知限制与漏洞报告方式见 **[SECURITY.md](SECURITY.md)**。
 
 ## 测试
 
 ```bash
-npm test    # node:test,16 个用例(状态机 / resume / MCP 协议 / gitReview)
+npm test    # node:test,29 个用例(状态机 / resume / MCP 协议 / gitReview / 暴露面校验)
 ```
 
 ## License
 
-MIT
+MIT — 见 [LICENSE](LICENSE)。
+
+## 声明
+
+CCTower 是一个独立的社区项目,**与 Anthropic 没有关联,未获其背书或审核**。
+"Claude"、"Claude Code" 是 Anthropic 的商标,此处仅用于说明本项目与之配合使用。
+本项目通过官方 Claude Code CLI 的公开接口(`--settings` hooks、`--mcp-config`、
+`--append-system-prompt`)工作,不修改也不重分发 Claude Code 本体;使用时请遵守
+Anthropic 的服务条款与使用政策。运行 CCTower 产生的模型调用消耗你自己的账号额度。

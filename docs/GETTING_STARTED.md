@@ -112,11 +112,13 @@ CCW_PORT=8123 CCW_TOKEN=$(openssl rand -hex 16) npm start
 ## 6. 安全须知(重要)
 
 - **默认只绑定 localhost**,并校验请求的 Host / Origin,防浏览器发起的 CSRF / DNS rebinding。仅本机使用无需额外配置。
+- **Host 校验不是网络层认证**:Host 头由请求方决定,`curl -H 'Host: 127.0.0.1:7080' http://<你的IP>:7080/…` 能直接穿过白名单。所以对外部署时,`CCW_TOKEN` 是唯一的认证边界。
 - **想让别人/远程访问**,不要裸奔 `CCW_HOST=0.0.0.0`。正确做法:
-  1. 设一个强 `CCW_TOKEN`;
+  1. 设一个强 `CCW_TOKEN`(`openssl rand -hex 24`);
   2. 把外部域名加进 `CCW_ALLOWED_HOSTS`;
   3. 前面架 HTTPS 反向代理(nginx/caddy),并开启 WebSocket upgrade 转发。
   首次打开网页会提示输入令牌(存 localStorage);令牌经 WebSocket 子协议传输,不落进 URL/日志。
+- **忘了设令牌服务会直接拒绝启动**:`CCW_HOST` 非回环、或 `CCW_ALLOWED_HOSTS` 非空,而 `CCW_TOKEN` 为空时,启动即报错退出(exit 1)并打印修法。令牌短于 16 位只告警不阻断。
 - **权限模式 `bypassPermissions` 会放行 agent 的一切操作**(含删除、执行任意命令)。用它时务必配合独立 worktree 隔离;拿不准就用默认"每次询问",在网页上逐次批准。
 - 终端逐键输入**不落盘**(可能含密码);只有显式的决策/权限/合并操作会记入时间线。
 - 目录浏览接口只允许访问 home 与启动目录(或 `CCW_BROWSE_ROOTS`),经真实路径校验,防止遍历整机文件系统。

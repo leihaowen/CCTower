@@ -42,8 +42,9 @@ Environment=TMPDIR=/tmp
 Environment=PATH=__PATH__
 Environment=CCW_PORT=7080
 Environment=CCW_HOST=127.0.0.1
-# 对外暴露时再取消注释并设强令牌(详见 docs/GETTING_STARTED.md 第 6 节)
-# Environment=CCW_TOKEN=please-change-me
+# 对外暴露时(CCW_HOST 改成非回环地址)必须同时设强令牌,否则服务会拒绝启动。
+# 生成:openssl rand -hex 24   详见 docs/GETTING_STARTED.md 第 6 节
+# Environment=CCW_TOKEN=换成你生成的随机串
 
 [Install]
 WantedBy=default.target

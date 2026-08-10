@@ -37,6 +37,18 @@ function sanitizeClaudeArgs({ permissionMode, extraArgs }) {
 const ATTENTION = new Set(['needs_decision', 'needs_permission', 'blocked', 'review_ready']);
 const BUFFER_CAP = 200_000;
 const STALE_MS = 10 * 60 * 1000;
+// 手工可设置的状态。缺 exited:那是进程事实,不该由人假造
+const MANUAL_STATUSES = new Set(['ready', 'executing', 'verifying', 'needs_decision',
+  'needs_permission', 'blocked', 'review_ready', 'completed', 'stale']);
+// 打断手工状态的来源:Agent 主动上报比人工标记更硬
+const AUTHORITATIVE = new Set(['Agent 上报']);
+// 清洗版 tail:只给列表页那种一两百像素高的小卡片用,行数不必多
+const TAIL_LINES = 16;
+const TAIL_SCAN = 80; // 清洗前扫描的原始行数,要大于 TAIL_LINES 以抵消空行折叠
+// 原样屏幕:画布 tile 用,按视口行数推,封顶防止 PTY 被调得离谱时payload 爆掉
+const SCREEN_MAX_ROWS = 80;
+const PTY_MIN = { cols: 40, rows: 10 };
+const PTY_MAX = { cols: 400, rows: 200 };
 
 class SessionManager {
   constructor({ dataDir, baseUrl, onChange, onNotify, backend, authToken }) {
@@ -80,6 +92,10 @@ class SessionManager {
     }
     try {
       for (const s of arr) {
+        // 旧版本存下来的会话缺少后加的字段,在这里补齐 —— 否则前端会一直读到 undefined
+        if (s.statusOverride === undefined) s.statusOverride = null;
+        if (s.ptyCols === undefined) s.ptyCols = 120;
+        if (s.ptyRows === undefined) s.ptyRows = 32;
         this.sessions.set(s.id, s);
         if (!s.alive) continue;
         // tmux 托管的会话在服务重启后仍在运行:重新接管而不是宣告死亡
@@ -153,6 +169,19 @@ class SessionManager {
   }
 
   _setStatus(s, status, statusLine, source = '系统观测') {
+    // 手工状态优先于自动判定,但有两个例外必须打穿它:
+    //   1. Agent 主动上报 —— 比人工标记更硬的事实
+    //   2. 需要决策/授权/阻塞 —— 平台的立身之本,绝不能因为有人标了"已完成"就把
+    //      真实的授权请求吞掉,那会让人错过必须响应的事
+    if (s.statusOverride && status !== s.statusOverride) {
+      if (AUTHORITATIVE.has(source) || ATTENTION.has(status)) {
+        this._event(s, 'status', `手工状态「${s.statusOverride}」已让位给${source}`, source);
+        s.statusOverride = null;
+      } else {
+        if (statusLine && s.statusLine !== statusLine) { s.statusLine = statusLine; this._touch(s); }
+        return;
+      }
+    }
     const changed = s.status !== status || s.statusLine !== statusLine;
     if (s.status !== status) s.statusChangedAt = new Date().toISOString();
     s.status = status;
@@ -199,7 +228,9 @@ class SessionManager {
       lastSemanticAt: new Date().toISOString(), // 最后一次 hook/上报/用户输入,用于 stale 判定
       status: type === 'claude' ? 'ready' : 'terminal_only',
       statusChangedAt: new Date().toISOString(),
+      statusOverride: null, // 非空表示状态由人工锁定,见 setStatusOverride
       statusLine: type === 'claude' ? '正在启动 Claude Code…' : '普通终端,语义未知',
+      ptyCols: 120, ptyRows: 32, // 与 spawn 时的 PTY 尺寸一致,前端据此显示分辨率
       tailCache: '',
       alive: false,
       exitCode: null,
@@ -428,6 +459,7 @@ class SessionManager {
       }
       if (!this.sessions.has(s.id)) return; // session 已删除,不再广播状态
       this._event(s, 'lifecycle', `进程退出,exit code ${code}`);
+      s.statusOverride = null; // 进程真的退出了,任何手工标记都作废
       if (rt.expectExit) {
         this._setStatus(s, 'exited', '已被用户停止');
       } else if (s.type === 'claude') {
@@ -483,6 +515,10 @@ class SessionManager {
         if (rt.controller === ws && s.alive) {
           try { rt.pty.resize(m.cols, m.rows); } catch { }
           try { rt.head.resize(m.cols, m.rows); } catch { } // 与 PTY 保持同尺寸
+          if (s.ptyCols !== m.cols || s.ptyRows !== m.rows) {
+            s.ptyCols = m.cols; s.ptyRows = m.rows;
+            this._touch(s); // 让别的视图看到分辨率变了
+          }
         }
       } else if (m.type === 'take-control') {
         const prev = rt.controller;
@@ -945,19 +981,23 @@ class SessionManager {
 
   // ---------- 迷你终端画面 ----------
 
-  // 返回自上次调用以来画面有变化的 session 的最新屏幕文本
+  // 返回自上次调用以来画面有变化的 session 的最新屏幕
+  // 两份产物用途不同:tail 是清洗过的摘要(小卡片 + AI 归纳),screen 是原样视口(画布 tile)
   collectTails() {
     const out = [];
     for (const [id, rt] of this.runtime) {
       const s = this.sessions.get(id);
       if (!s || !s.alive) continue;
+      const screen = this._screenOf(rt);
+      // 以原样屏幕判定"画面变了":清洗版会把边框/空白的变化抹掉,导致画布该刷时不刷
+      if (screen.plain === rt.lastScreen) continue;
+      rt.lastScreen = screen.plain;
       const { plain, html } = this._tailOf(rt);
-      if (plain !== rt.lastTail) {
-        rt.lastTail = plain;
-        s.tailCache = plain; // 纯文本:AI 归纳材料 + 变化比对
-        s.tailHtml = html; // 着色 HTML:迷你终端展示(服务端已转义)
-        out.push({ id, tail: plain, html });
-      }
+      rt.lastTail = plain;
+      s.tailCache = plain;      // 纯文本:AI 归纳材料
+      s.tailHtml = html;        // 清洗着色 HTML:列表页迷你终端
+      s.screenHtml = screen.html; // 原样着色 HTML:画布 tile(服务端已转义)
+      out.push({ id, tail: plain, html, screen: screen.html });
     }
     if (out.length) this._save();
     return out;
@@ -972,29 +1012,10 @@ class SessionManager {
       const buf = rt.head.buffer.active;
       const total = buf.length;
       const cleaned = []; // { plain, segs: [{ text, cls, rgb }] }
-      for (let i = Math.max(0, total - 60); i < total; i++) {
+      for (let i = Math.max(0, total - TAIL_SCAN); i < total; i++) {
         const line = buf.getLine(i);
         if (!line) continue;
-        // 逐格提取文本与前景色,合并同色连续段
-        const segs = [];
-        for (let x = 0; x < line.length; x++) {
-          const cell = line.getCell(x);
-          if (!cell) break;
-          const ch = cell.getChars() || (cell.getWidth() ? ' ' : '');
-          if (!ch) continue;
-          let cls = '', rgb = '';
-          if (cell.isFgPalette()) {
-            const n = cell.getFgColor();
-            if (n >= 0 && n < 16) cls = `tc-${n}`;
-          } else if (cell.isFgRGB()) {
-            const v = cell.getFgColor();
-            rgb = `${(v >> 16) & 255},${(v >> 8) & 255},${v & 255}`;
-          }
-          if (cell.isBold()) cls = (cls ? cls + ' ' : '') + 'tb';
-          const last = segs[segs.length - 1];
-          if (last && last.cls === cls && last.rgb === rgb) last.text += ch;
-          else segs.push({ text: ch, cls, rgb });
-        }
+        const segs = this._segsOf(line);
         // 行级清洗在纯文本上决策(去包边、折叠长横线/大段空白),再同步裁剪段
         for (const g of segs) g.text = g.text.replace(/[─━═]{3,}/g, ' ').replace(/ {4,}/g, '   ');
         let plain = segs.map((g) => g.text).join('').trimEnd();
@@ -1017,18 +1038,129 @@ class SessionManager {
         cleaned.push({ plain, segs: plain ? kept : [] });
       }
       while (cleaned.length && !cleaned[cleaned.length - 1].plain) cleaned.pop();
-      const lines = cleaned.slice(-14);
+      const lines = cleaned.slice(-TAIL_LINES);
       return {
         plain: lines.map((l) => l.plain).join('\n'),
-        html: lines.map((l) => l.segs.map((g) => {
-          const t = this._escHtml(g.text);
-          if (!g.cls && !g.rgb) return t;
-          return `<span${g.cls ? ` class="${g.cls}"` : ''}${g.rgb ? ` style="color:rgb(${g.rgb})"` : ''}>${t}</span>`;
-        }).join('')).join('\n'),
+        html: lines.map((l) => this._segsHtml(l.segs)).join('\n'),
       };
     } catch {
       return { plain: rt.lastTail || '', html: this._escHtml(rt.lastTail || '') };
     }
+  }
+
+  // 逐格提取字符与前景色,合并同色连续段。不做任何清洗 —— 清洗是调用方的事
+  _segsOf(line) {
+    const segs = [];
+    for (let x = 0; x < line.length; x++) {
+      const cell = line.getCell(x);
+      if (!cell) break;
+      const ch = cell.getChars() || (cell.getWidth() ? ' ' : '');
+      if (!ch) continue;
+      let cls = '', rgb = '';
+      if (cell.isFgPalette()) {
+        const n = cell.getFgColor();
+        if (n >= 0 && n < 16) cls = `tc-${n}`;
+      } else if (cell.isFgRGB()) {
+        const v = cell.getFgColor();
+        rgb = `${(v >> 16) & 255},${(v >> 8) & 255},${v & 255}`;
+      }
+      if (cell.isBold()) cls = (cls ? cls + ' ' : '') + 'tb';
+      const last = segs[segs.length - 1];
+      if (last && last.cls === cls && last.rgb === rgb) last.text += ch;
+      else segs.push({ text: ch, cls, rgb });
+    }
+    return segs;
+  }
+
+  _segsHtml(segs) {
+    return segs.map((g) => {
+      const t = this._escHtml(g.text);
+      if (!g.cls && !g.rgb) return t;
+      return `<span${g.cls ? ` class="${g.cls}"` : ''}${g.rgb ? ` style="color:rgb(${g.rgb})"` : ''}>${t}</span>`;
+    }).join('');
+  }
+
+  // 原样的当前屏幕:取视口而不是滚动缓冲切片,且不做任何清洗。
+  // Claude Code 这类全屏 TUI 是整屏重绘的,只有原样的视口才能正确还原盒子边框
+  // 与缩进 —— _tailOf 那套面向小卡片的清洗会把它彻底打乱。
+  _screenOf(rt) {
+    try {
+      const buf = rt.head.buffer.active;
+      const rows = Math.min(rt.head.rows || 32, SCREEN_MAX_ROWS);
+      const start = buf.baseY; // 视口起点,不含滚动缓冲
+      const plain = [], html = [];
+      for (let i = start; i < start + rows; i++) {
+        const line = buf.getLine(i);
+        if (!line) { plain.push(''); html.push(''); continue; }
+        const segs = this._segsOf(line);
+        // 只裁行尾空白(不可见),行首缩进与所有边框字符原样保留
+        let text = segs.map((g) => g.text).join('');
+        const keep = text.replace(/\s+$/, '').length;
+        let budget = keep;
+        const kept = [];
+        for (const g of segs) {
+          if (budget <= 0) break;
+          const t = g.text.length > budget ? g.text.slice(0, budget) : g.text;
+          budget -= t.length;
+          kept.push({ text: t, cls: g.cls, rgb: g.rgb });
+        }
+        plain.push(text.slice(0, keep));
+        html.push(this._segsHtml(kept));
+      }
+      while (plain.length && !plain[plain.length - 1]) { plain.pop(); html.pop(); }
+      return { plain: plain.join('\n'), html: html.join('\n') };
+    } catch {
+      return { plain: '', html: '' };
+    }
+  }
+
+  // ---------- 手工状态 ----------
+
+  // status=null 表示恢复自动判定。手工状态之后只会被 Agent 上报、进程退出、
+  // 或真实的注意力事件(需决策/授权/阻塞)打断,见 _setStatus
+  setStatusOverride(id, status) {
+    const s = this.sessions.get(id);
+    if (!s) throw new Error('session 不存在');
+    if (status === null || status === undefined || status === '') {
+      if (!s.statusOverride) return { ok: true, statusOverride: null };
+      s.statusOverride = null;
+      this._event(s, 'status', '已恢复为自动判定状态', '用户操作');
+      this._touch(s);
+      return { ok: true, statusOverride: null };
+    }
+    if (!MANUAL_STATUSES.has(status)) throw new Error(`不支持手工设为 ${status}`);
+    s.statusOverride = status;
+    s.statusChangedAt = new Date().toISOString();
+    s.status = status;
+    s.statusLine = `手工标记为「${status}」`;
+    this._event(s, 'status', `手工标记状态:${status}`, '用户操作');
+    // 手工标成注意力状态时不推送通知 —— 是你自己标的,不需要平台再提醒你
+    s.lastNotified = ATTENTION.has(status) ? `manual:${status}` : null;
+    this._touch(s);
+    return { ok: true, statusOverride: status };
+  }
+
+  // ---------- PTY 分辨率 ----------
+
+  // 真正 resize PTY:尺寸是整个会话共享的,所有观察者的画面都会跟着重排。
+  // 有人正持有控制权时拒绝,避免从别人手里把画面改掉。
+  resizePty(id, cols, rows) {
+    const s = this.sessions.get(id);
+    const rt = this.runtime.get(id);
+    if (!s || !rt || !s.alive) throw new Error('session 未在运行');
+    if (rt.controller && rt.controller.readyState === 1) {
+      throw new Error('已有客户端持有控制权,请先在展开的终端里接管控制再调整');
+    }
+    const c = Math.round(Number(cols)), r = Math.round(Number(rows));
+    if (!Number.isFinite(c) || !Number.isFinite(r)) throw new Error('列数/行数必须是数字');
+    if (c < PTY_MIN.cols || c > PTY_MAX.cols) throw new Error(`列数需在 ${PTY_MIN.cols}–${PTY_MAX.cols} 之间`);
+    if (r < PTY_MIN.rows || r > PTY_MAX.rows) throw new Error(`行数需在 ${PTY_MIN.rows}–${PTY_MAX.rows} 之间`);
+    try { rt.pty.resize(c, r); } catch (e) { throw new Error('PTY resize 失败:' + e.message); }
+    try { rt.head.resize(c, r); } catch { /* 镜像失败不影响真实 PTY */ }
+    s.ptyCols = c; s.ptyRows = r;
+    this._event(s, 'status', `PTY 分辨率改为 ${c}×${r}(所有观察者同步重排)`, '用户操作');
+    this._touch(s);
+    return { ok: true, cols: c, rows: r };
   }
 
   // 强制重绘:轻微抖动 PTY 尺寸触发 SIGWINCH,让 TUI 全量重画

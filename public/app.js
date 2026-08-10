@@ -97,13 +97,15 @@ function connectEvents() {
       render();
     } else if (m.type === 'tail') {
       const s = state.sessions.get(m.id);
-      if (s) { s.tailCache = m.tail; s.tailHtml = m.html; }
+      if (s) { s.tailCache = m.tail; s.tailHtml = m.html; s.screenHtml = m.screen; }
       document.querySelectorAll(`.mini-term[data-id="${m.id}"]`).forEach((el) => {
         // html 由服务端逐段转义生成,只含着色 span
         if (m.html !== undefined) el.innerHTML = m.html;
         else el.textContent = m.tail;
         el.scrollTop = el.scrollHeight;
       });
+      // 画布 tile 用同一份 tail,只重画这一个,不触发整页 render
+      if (window.CCCanvas && CCCanvas.isActive()) CCCanvas.onTail(m.id);
     } else if (m.type === 'notify') {
       notify(m);
     }
@@ -134,6 +136,174 @@ function toast(title, body, onClick, ttl = 8000) {
   el.onclick = () => { el.remove(); onClick && onClick(); };
   $('#toasts').appendChild(el);
   setTimeout(() => el.remove(), ttl);
+}
+
+/* ---------- 手工状态菜单 ---------- */
+// 服务端 MANUAL_STATUSES 的镜像;exited 不在内(那是进程事实,不该由人假造)
+const MANUAL_STATUSES = ['ready', 'executing', 'verifying', 'needs_decision',
+  'needs_permission', 'blocked', 'review_ready', 'completed', 'stale'];
+let stMenuEl = null;
+function closeStatusMenu() { if (stMenuEl) { stMenuEl.remove(); stMenuEl = null; } }
+// 挂在 body 上而不是 anchor 里:左右栏/画布 tile 随时会被整体重绘
+function openStatusMenu(anchor, s) {
+  closeStatusMenu();
+  const el = document.createElement('div');
+  el.className = 'st-menu';
+  el.innerHTML = `
+    <div class="st-menu-h">手工设定状态</div>
+    ${MANUAL_STATUSES.map((k) => `<button data-k="${k}" class="${s.status === k ? 'on' : ''}">
+      <i style="background:var(--c-${k})"></i>${esc((STATUS[k] || {}).label || k)}
+    </button>`).join('')}
+    <div class="st-menu-sep"></div>
+    <button data-k="" class="auto" ${s.statusOverride ? '' : 'disabled'}>↺ 恢复自动判定</button>
+    <div class="st-menu-note">${s.statusOverride
+      ? '当前为手工锁定。Agent 上报、进程退出、或出现需决策 / 需授权 / 阻塞时会自动让位。'
+      : '当前跟随系统判定。'}</div>`;
+  document.body.appendChild(el);
+  stMenuEl = el;
+
+  const r = anchor.getBoundingClientRect(), w = 208;
+  el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
+  const below = r.bottom + 6;
+  el.style.top = (below + el.offsetHeight > window.innerHeight - 8
+    ? Math.max(8, r.top - el.offsetHeight - 6) : below) + 'px';
+
+  el.querySelectorAll('button').forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      if (b.disabled) return;
+      closeStatusMenu();
+      act(s.id, 'status', b.dataset.k || null)
+        .then(() => toast('状态已更新', b.dataset.k ? `手工标为「${(STATUS[b.dataset.k] || {}).label}」` : '已恢复自动判定', null, 2500))
+        .catch((err) => toast('设置失败', err.message));
+    };
+  });
+  setTimeout(() => {
+    document.addEventListener('mousedown', onDocDown, { once: true });
+  }, 0);
+  function onDocDown(e) { if (!el.contains(e.target)) closeStatusMenu(); else setTimeout(() => document.addEventListener('mousedown', onDocDown, { once: true }), 0); }
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeStatusMenu(); });
+
+/* ---------- 布局:侧边栏 / 工作区分栏 的宽度与折叠 ---------- */
+// 全局生效(不按 session 区分),存 localStorage;宽度只落到 CSS 变量,拖拽期间不重排 DOM
+const LAYOUT_KEY = 'ccw.layout.v1';
+const LAYOUT_DEF = {
+  sidebarW: 216, sidebarFold: false,
+  wsLeftW: 290, wsRightW: 290, wsLeftFold: false, wsRightFold: false,
+  panes: {}, // { [小节 key]: true = 已折叠 }
+};
+// 上限同时受视口约束,避免把终端挤没
+const LIMITS = {
+  sidebarW: [160, () => window.innerWidth * 0.4, 360],
+  wsLeftW:  [200, () => window.innerWidth * 0.38, 560],
+  wsRightW: [200, () => window.innerWidth * 0.38, 560],
+};
+function clampW(key, v) {
+  const [lo, vp, hi] = LIMITS[key];
+  return Math.round(Math.min(Math.max(lo, Math.min(hi, vp())), Math.max(lo, Number(v) || 0)));
+}
+
+const layout = (() => {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(LAYOUT_KEY)) || {}; } catch { /* 坏数据按默认 */ }
+  const l = { ...LAYOUT_DEF, ...saved, panes: { ...saved.panes } };
+  // 窄屏首次打开默认收起右栏(此前是硬隐藏);已有偏好则尊重用户
+  if (saved.wsRightFold === undefined && window.innerWidth <= 1100) l.wsRightFold = true;
+  for (const k of Object.keys(LIMITS)) l[k] = clampW(k, l[k]);
+  return l;
+})();
+function saveLayout() {
+  try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch { /* 隐私模式下不持久化 */ }
+}
+function applyLayoutVars() {
+  const r = document.documentElement.style;
+  r.setProperty('--sidebar-w', layout.sidebarW + 'px');
+  r.setProperty('--wsl-w', layout.wsLeftW + 'px');
+  r.setProperty('--wsr-w', layout.wsRightW + 'px');
+}
+// 横向拖拽:pointer capture 保证鼠标划出把手甚至划进终端也不丢事件;dir=-1 表示把手在右侧
+// enabled:栏已折叠时不接受拖拽,免得偷偷改掉一个看不见的宽度
+function dragWidth(handle, key, dir, enabled = () => true) {
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || !enabled()) return;
+    e.preventDefault();
+    const startX = e.clientX, startW = layout[key];
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add('on');
+    document.body.classList.add('dragging');
+    const move = (ev) => { layout[key] = clampW(key, startW + (ev.clientX - startX) * dir); applyLayoutVars(); };
+    const up = () => {
+      handle.releasePointerCapture(e.pointerId);
+      handle.classList.remove('on');
+      document.body.classList.remove('dragging');
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      handle.removeEventListener('pointercancel', up);
+      saveLayout();
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+    handle.addEventListener('pointercancel', up);
+  });
+}
+
+function initSidebarLayout() {
+  const bar = $('#sidebar'), btn = $('#side-fold'), rz = $('#rz-sidebar');
+  const applyFold = () => {
+    bar.classList.toggle('collapsed', layout.sidebarFold);
+    btn.textContent = layout.sidebarFold ? '⟩' : '⟨';
+    btn.title = layout.sidebarFold ? '展开侧边栏' : '收起侧边栏';
+    btn.setAttribute('aria-label', btn.title);
+  };
+  btn.onclick = () => { layout.sidebarFold = !layout.sidebarFold; saveLayout(); applyFold(); };
+  rz.ondblclick = () => { layout.sidebarW = LAYOUT_DEF.sidebarW; applyLayoutVars(); saveLayout(); };
+  dragWidth(rz, 'sidebarW', 1);
+  applyFold();
+}
+
+// 每次 renderWorkspace 重建 .ws-body 后调用:恢复折叠态并挂上拖拽/折叠交互
+function initWsLayout() {
+  const body = $('#ws-body');
+  const apply = () => {
+    body.classList.toggle('l-fold', layout.wsLeftFold);
+    body.classList.toggle('r-fold', layout.wsRightFold);
+    for (const [side, key, open, shut] of [['left', 'wsLeftFold', '⟨', '⟩'], ['right', 'wsRightFold', '⟩', '⟨']]) {
+      const col = $(`#ws-${side}`), f = layout[key];
+      col.classList.toggle('folded', f);
+      const b = col.querySelector('.col-fold');
+      b.textContent = f ? shut : open;
+      b.title = f ? '展开此栏' : '收起此栏';
+    }
+  };
+  const toggleCol = (key) => { layout[key] = !layout[key]; saveLayout(); apply(); };
+  for (const [side, key] of [['left', 'wsLeftFold'], ['right', 'wsRightFold']]) {
+    const col = $(`#ws-${side}`);
+    // 收起态整条可点;展开态只有折叠钮响应,免得点内容也把栏收了
+    col.addEventListener('click', (e) => {
+      if (col.classList.contains('folded') || e.target.closest('.col-fold')) toggleCol(key);
+    });
+  }
+  dragWidth($('#ws-gut-l'), 'wsLeftW', 1, () => !layout.wsLeftFold);
+  dragWidth($('#ws-gut-r'), 'wsRightW', -1, () => !layout.wsRightFold);
+  // 小节折叠用委托:左右栏内容每次状态推送都会整体重绘,不能把监听挂在小节上
+  body.addEventListener('click', (e) => {
+    const head = e.target.closest('.pane-head');
+    if (!head) return;
+    const sec = head.closest('.pane');
+    layout.panes[sec.dataset.pane] = !layout.panes[sec.dataset.pane];
+    sec.classList.toggle('folded', layout.panes[sec.dataset.pane]);
+    saveLayout();
+  });
+  apply();
+}
+
+// 折叠位在生成 HTML 时直接写进 class:否则每来一条 SSE 重绘,用户的折叠就被弹开
+function pane(key, title, inner) {
+  return `<section class="pane${layout.panes[key] ? ' folded' : ''}" data-pane="${key}">
+    <h4 class="pane-head"><span class="caret">▾</span>${esc(title)}</h4>
+    <div class="pane-body">${inner}</div>
+  </section>`;
 }
 
 /* ---------- brief html ---------- */
@@ -193,14 +363,24 @@ function bindHover(cardEl, sessionId) {
 
 /* ---------- render ---------- */
 function render() {
+  const active = [...state.sessions.values()].filter((s) => !s.archived);
   $('#inbox-count').textContent = inboxSessions().length;
   $('#inbox-count').classList.toggle('hot', inboxSessions().length > 0);
-  $('#sessions-count').textContent = [...state.sessions.values()].filter((s) => !s.archived).length;
+  $('#sessions-count').textContent = active.length;
+  $('#canvas-count').textContent = active.length;
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
   popover.hidden = true;
+  // 画布持有 xterm / 监听器,离开视图必须显式拆掉
+  if (state.view !== 'canvas' && window.CCCanvas && CCCanvas.isActive()) CCCanvas.dispose();
   if (state.view === 'inbox') renderInbox();
   else if (state.view === 'sessions') renderSessions();
+  else if (state.view === 'canvas') renderCanvas();
   else if (state.view === 'workspace') renderWorkspace();
+}
+
+function renderCanvas() {
+  if (main.className !== 'cv-mode') { main.className = 'cv-mode'; main.innerHTML = ''; }
+  CCCanvas.render(main);
 }
 
 function inboxSessions() {
@@ -523,15 +703,25 @@ function renderWorkspace() {
         <button class="btn-ghost btn-danger" id="ws-delete">删除</button>
       </div>
     </div>
-    <div class="ws-body">
-      <div class="ws-col left" id="ws-left"></div>
+    <div class="ws-body" id="ws-body">
+      <div class="ws-col left" id="ws-left">
+        <div class="col-head"><span class="col-title">上下文</span><button class="col-fold" type="button">⟨</button></div>
+        <div class="col-body" id="ws-left-body"></div>
+      </div>
+      <div class="ws-gut l" id="ws-gut-l"></div>
       <div class="ws-term">
         <div class="readonly-bar" id="ro-bar" hidden>只读观察中<button id="ro-take">接管控制</button></div>
         <div id="term-host"></div>
       </div>
-      <div class="ws-col right" id="ws-right"></div>
+      <div class="ws-gut r" id="ws-gut-r"></div>
+      <div class="ws-col right" id="ws-right">
+        <div class="col-head"><span class="col-title">历史</span><button class="col-fold" type="button">⟩</button></div>
+        <div class="col-body" id="ws-right-body"></div>
+      </div>
     </div>
   </div>`;
+
+  initWsLayout();
 
   $('#ws-back').onclick = () => closeWorkspace('inbox');
   $('#ws-redraw').onclick = () => {
@@ -632,13 +822,21 @@ function updatePanels(s) {
   const nameEl = $('#ws-name');
   if (nameEl && document.activeElement !== nameEl && nameEl.value !== s.name) nameEl.value = s.name;
   const pill = $('#ws-pill');
-  if (pill) { pill.style.setProperty('--pc', st.color); pill.innerHTML = `<span class="dot ${st.pulse && s.alive ? 'pulse' : ''}"></span>${st.label}`; }
+  if (pill) {
+    pill.style.setProperty('--pc', st.color);
+    pill.innerHTML = `<span class="dot ${st.pulse && s.alive ? 'pulse' : ''}"></span>${s.statusOverride ? '✎ ' : ''}${st.label}`;
+    pill.classList.add('clickable');
+    pill.title = s.statusOverride ? '手工锁定中,点击可改或恢复自动' : '点击手工设定状态';
+    pill.onclick = () => openStatusMenu(pill, s);
+  }
   const meta = $('#ws-meta');
   if (meta) meta.textContent = `${s.type === 'claude' ? 'claude-code' : 'terminal'} · ${s.alive ? 'running' : 'stopped'} · ${ago(s.lastActivityAt)}`;
 
   const d = s.brief?.decision;
-  $('#ws-left').innerHTML = `
-    <h4>Brief</h4>${briefHTML(s)}
+  const leftBody = $('#ws-left-body');
+  leftBody.innerHTML = `
+    ${pane('brief', 'Brief', briefHTML(s))}
+    <div class="pane-fixed">
     ${d && d.question ? `<div class="decision-box">
       <div class="q">${esc(d.question)}</div>
       ${d.reason ? `<div class="why">推荐 ${esc(d.recommended || '')}:${esc(d.reason)}</div>` : ''}
@@ -652,9 +850,8 @@ function updatePanels(s) {
       </div>
     </div>` : ''}
     <div class="reply"><input id="ws-reply" placeholder="${s.type === 'claude' ? '回复 Claude(回车发送到原会话)' : '向终端发送一行命令'}"><button class="btn-ghost" id="ws-send">发送</button></div>
-    <div style="height:16px"></div>
-    <h4>Session</h4>
-    <dl class="kv">
+    </div>
+    ${pane('session', 'Session', `<dl class="kv">
       <dt>类型</dt><dd>${s.type === 'claude' ? 'Claude Code' : 'Terminal'}</dd>
       ${s.type === 'claude' && s.model ? `<dt>模型</dt><dd>${esc(s.model)}</dd>` : ''}
       ${s.type === 'claude' && s.permissionMode ? `<dt>权限模式</dt><dd>${esc(s.permissionMode)}</dd>` : ''}
@@ -665,11 +862,10 @@ function updatePanels(s) {
       <dt>创建</dt><dd>${new Date(s.createdAt).toLocaleString()}</dd>
       <dt>最后活动</dt><dd>${ago(s.lastActivityAt)}</dd>
       ${s.exitCode !== null ? `<dt>exit</dt><dd>${s.exitCode}</dd>` : ''}
-    </dl>
-    <h4>手工备注</h4>
-    <div class="note-box"><textarea id="ws-note" rows="2" placeholder="给这个 session 写一句备注">${esc(s.note)}</textarea></div>`;
+    </dl>`)}
+    ${pane('note', '手工备注', `<div class="note-box"><textarea id="ws-note" rows="2" placeholder="给这个 session 写一句备注">${esc(s.note)}</textarea></div>`)}`;
 
-  $('#ws-left').querySelectorAll('.opt-btn').forEach((b) => {
+  leftBody.querySelectorAll('.opt-btn').forEach((b) => {
     b.onclick = () => (b.dataset.perm ? sendPermission(s.id, b.dataset.perm === 'allow') : sendDecision(s.id, b.dataset.answer));
   });
   const reply = $('#ws-reply'), send = () => {
@@ -684,18 +880,17 @@ function updatePanels(s) {
 
   const evs = [...(s.events || [])].reverse().slice(0, 40);
   const dec = [...(s.decisions || [])].reverse();
-  $('#ws-right').innerHTML = `
-    ${dec.length ? `<h4>决策历史</h4><div class="timeline">${dec.map((x) => `
+  $('#ws-right-body').innerHTML = `
+    ${dec.length ? pane('decisions', '决策历史', `<div class="timeline">${dec.map((x) => `
       <div class="tl-item k-input">
         <div class="tl-time">${new Date(x.at).toLocaleTimeString()}</div>
         <div class="tl-text">${x.question ? `Q:${esc(x.question)}<br>` : ''}A:${esc(x.answer)} ${x.delivered ? '✓已送达' : '✗未送达'}</div>
-      </div>`).join('')}</div><div style="height:10px"></div>` : ''}
-    <h4>事件时间线</h4>
-    <div class="timeline">${evs.map((e) => `
+      </div>`).join('')}</div>`) : ''}
+    ${pane('events', '事件时间线', `<div class="timeline">${evs.map((e) => `
       <div class="tl-item k-${esc(e.kind)}">
         <div class="tl-time">${new Date(e.at).toLocaleTimeString()} <span class="tl-src">· ${esc(e.source)}</span></div>
         <div class="tl-text">${esc(e.text)}${e.count > 1 ? ` <span class="tl-src">×${e.count}</span>` : ''}</div>
-      </div>`).join('') || '<div class="tl-item"><div class="tl-text">暂无事件</div></div>'}</div>`;
+      </div>`).join('') || '<div class="tl-item"><div class="tl-text">暂无事件</div></div>'}</div>`)}`;
 }
 
 /* ---------- new session dialog ---------- */
@@ -798,6 +993,8 @@ $('#form-new').onsubmit = async (e) => {
 };
 
 /* ---------- nav & boot ---------- */
+applyLayoutVars();
+initSidebarLayout();
 document.querySelectorAll('.nav-item').forEach((b) => b.onclick = () => { disposeTerm(); state.view = b.dataset.view; state.currentId = null; render(); });
 $('#btn-reload').onclick = () => location.reload();
 const dlgSettings = $('#dlg-settings');

@@ -7,9 +7,32 @@
     "start": "node server/index.js",
     "test": "node --test test/*.test.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "claude-code",
+    "ai-agent",
+    "agent-orchestration",
+    "git-worktree",
+    "tmux",
+    "terminal",
+    "dashboard"
+  ],
+  "author": "Haowen Lei",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leihaowen/CCTower.git"
+  },
+  "bugs": {
+    "url": "https://github.com/leihaowen/CCTower/issues"
+  },
+  "homepage": "https://github.com/leihaowen/CCTower#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ],
   "type": "commonjs",
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

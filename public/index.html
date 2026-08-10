@@ -5,29 +5,40 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CCTower</title>
 <link rel="stylesheet" href="/vendor/xterm.css">
-<link rel="stylesheet" href="/style.css?v=19">
+<link rel="stylesheet" href="/style.css?v=28">
 </head>
 <body>
 <div id="connbar" hidden>连接已断开,正在自动重连…</div>
 <div id="app">
   <aside id="sidebar">
-    <div class="wordmark" title="Claude Code Tower">CC<br>TOWER</div>
+    <div class="side-top">
+      <div class="wordmark" title="Claude Code Tower">CC<br>TOWER</div>
+      <button id="side-fold" class="side-fold" title="收起侧边栏" aria-label="收起侧边栏">⟨</button>
+    </div>
     <nav>
-      <button class="nav-item" data-view="inbox">
+      <button class="nav-item" data-view="inbox" title="Attention Inbox">
+        <span class="nav-ico">▣</span>
         <span class="nav-label">Attention Inbox</span>
         <span class="nav-count" id="inbox-count">0</span>
       </button>
-      <button class="nav-item" data-view="sessions">
+      <button class="nav-item" data-view="sessions" title="All Sessions">
+        <span class="nav-ico">▤</span>
         <span class="nav-label">All Sessions</span>
         <span class="nav-count" id="sessions-count">0</span>
       </button>
+      <button class="nav-item" data-view="canvas" title="Canvas — 无限画布">
+        <span class="nav-ico">◳</span>
+        <span class="nav-label">Canvas</span>
+        <span class="nav-count" id="canvas-count">0</span>
+      </button>
     </nav>
     <div class="sidebar-foot">
-      <button id="btn-new" class="btn-primary">＋ 新建 Session</button>
-      <button id="btn-notify" class="btn-ghost" title="开启浏览器桌面通知">开启桌面通知</button>
-      <button id="btn-settings" class="btn-ghost" title="飞书推送等通知偏好">通知设置</button>
-      <button id="btn-reload" class="btn-ghost" title="重新加载整个页面">⟳ 刷新页面</button>
+      <button id="btn-new" class="btn-primary" title="新建 Session"><span class="ico">＋</span><span class="lbl">新建 Session</span></button>
+      <button id="btn-notify" class="btn-ghost" title="开启浏览器桌面通知"><span class="ico">🔔</span><span class="lbl">开启桌面通知</span></button>
+      <button id="btn-settings" class="btn-ghost" title="飞书推送等通知偏好"><span class="ico">⚙</span><span class="lbl">通知设置</span></button>
+      <button id="btn-reload" class="btn-ghost" title="重新加载整个页面"><span class="ico">⟳</span><span class="lbl">刷新页面</span></button>
     </div>
+    <div id="rz-sidebar" class="rz" title="拖动调整宽度,双击复位"></div>
   </aside>
 
   <main id="main"></main>
@@ -117,6 +128,7 @@
 
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
-<script src="/app.js?v=19"></script>
+<script src="/canvas.js?v=28"></script>
+<script src="/app.js?v=28"></script>
 </body>
 </html>

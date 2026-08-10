@@ -23,6 +23,8 @@ jobs:
           node --check server/index.js
           node --check server/manager.js
           node --check server/claudeSetup.js
+          node --check server/authGuard.js
           node --check server/gitReview.js
           node --check server/mcpReport.js
           node --check public/app.js
+          node --check public/canvas.js

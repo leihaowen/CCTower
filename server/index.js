@@ -5,10 +5,11 @@ const fs = require('fs');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const { SessionManager } = require('./manager');
+const { auditExposure, tokenMatches } = require('./authGuard');
 
 const PORT = Number(process.env.CCW_PORT || 7080);
-// PRD §8 安全要求:默认只绑定 localhost。设 CCW_HOST=0.0.0.0 对外时必须配 CCW_TOKEN,
-// 且把外部访问域名加入 CCW_ALLOWED_HOSTS(逗号分隔 host:port)。
+// PRD §8 安全要求:默认只绑定 localhost。设 CCW_HOST=0.0.0.0 对外时必须配 CCW_TOKEN
+// (没配则拒绝启动,见下方 auditExposure),且把外部访问域名加入 CCW_ALLOWED_HOSTS(逗号分隔 host:port)。
 const HOST = process.env.CCW_HOST || '127.0.0.1';
 const BASE = `http://127.0.0.1:${PORT}`; // hooks/report 回调恒走本机回环
 const DATA_DIR = process.env.CCW_DATA_DIR || path.join(__dirname, '..', '.ccw-data');
@@ -43,8 +44,7 @@ function wsTokenFrom(req) {
 }
 function authOk(req) {
   if (!AUTH_TOKEN) return true;
-  const t = req.headers['x-ccw-token'] || wsTokenFrom(req);
-  return t.length === AUTH_TOKEN.length && require('crypto').timingSafeEqual(Buffer.from(t), Buffer.from(AUTH_TOKEN));
+  return tokenMatches(req.headers['x-ccw-token'] || wsTokenFrom(req), AUTH_TOKEN);
 }
 app.use('/api', (req, res, next) => {
   if (!isLocalRequest(req.headers)) return res.status(403).json({ error: 'forbidden' });
@@ -65,6 +65,14 @@ let config = { feishuWebhook: '', notifyReviewReady: false, authToken: '' };
 try { config = { ...config, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) }; } catch { /* 未配置 */ }
 const AUTH_TOKEN = process.env.CCW_TOKEN || config.authToken || '';
 const saveConfig = () => fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+
+// 对外可达就必须有令牌,否则直接拒绝启动(见 server/authGuard.js 的理由)。
+// 放在 listen 之前、令牌来源(env / config.json)都确定之后。
+{
+  const { fatal, warn } = auditExposure({ host: HOST, allowedHosts: process.env.CCW_ALLOWED_HOSTS, token: AUTH_TOKEN });
+  if (fatal) { console.error(`[CCTower] ${fatal}`); process.exit(1); }
+  if (warn) console.error(`[CCTower] 警告:${warn}`);
+}
 
 const REASON_LABEL = { needs_decision: '需要决策', needs_permission: '需要权限', blocked: '阻塞', review_ready: '完成待审' };
 function pushFeishu(text) {
@@ -145,12 +153,17 @@ app.post('/api/sessions/:id/action', (req, res) => {
     finish: () => manager.finish(id),
     'flag-brief': () => manager.flagBrief(id),
     note: () => manager.setNote(id, value),
+    status: () => manager.setStatusOverride(id, value || null),
+    resize: () => manager.resizePty(id, (value || {}).cols, (value || {}).rows),
     merge: () => manager.merge(id),
     'resolve-conflict': () => manager.resolveConflict(id, value || {}),
   };
   if (!ops[op]) return res.status(400).json({ error: `未知操作 ${op}` });
   try {
     const out = ops[op]();
+    // 改了分辨率就别等下一个 2 秒周期:TUI 收到 SIGWINCH 重排后立刻把新画面推出去,
+    // 否则用户拖完尺寸要盯着旧画面等两秒,看上去像"没重新渲染"
+    if (op === 'resize') { setTimeout(flushTails, 120); setTimeout(flushTails, 450); }
     res.json(out && typeof out === 'object' ? out : { ok: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -273,9 +286,12 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 // 迷你终端画面推送:2 秒一次,只推有变化的 session
-setInterval(() => {
-  for (const u of manager.collectTails()) broadcast({ type: 'tail', id: u.id, tail: u.tail, html: u.html });
-}, 2000);
+function flushTails() {
+  for (const u of manager.collectTails()) {
+    broadcast({ type: 'tail', id: u.id, tail: u.tail, html: u.html, screen: u.screen });
+  }
+}
+setInterval(flushTails, 2000);
 
 // 心跳保活:上一轮未回 pong 的视为死连接并 terminate(浏览器自动回 pong)
 setInterval(() => {
