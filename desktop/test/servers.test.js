@@ -29,7 +29,10 @@ test('sshTunnelArgs:argv 精确匹配,别名前有 --', () => {
   ]);
 });
 
-test('sshStartArgs:远程一键启动命令', () => {
+test('sshStartArgs:远程一键启动命令(含keepalive防超时)', () => {
   const s = normalizeServer({ sshAlias: 'prod-1' });
-  assert.deepEqual(sshStartArgs(s), ['-o', 'BatchMode=yes', '--', 'prod-1', 'systemctl --user start cctower']);
+  assert.deepEqual(sshStartArgs(s), [
+    '-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
+    '--', 'prod-1', 'systemctl --user start cctower'
+  ]);
 });

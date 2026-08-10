@@ -23,5 +23,7 @@ export function sshTunnelArgs(server, localPort) {
 }
 
 export function sshStartArgs(server) {
-  return ['-o', 'BatchMode=yes', '--', server.sshAlias, 'systemctl --user start cctower'];
+  // keepalive 让远端无响应时超时退出而不是无限挂住。
+  return ['-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
+    '--', server.sshAlias, 'systemctl --user start cctower'];
 }
