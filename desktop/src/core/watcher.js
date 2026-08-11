@@ -4,23 +4,38 @@ export const ATTENTION = new Set(['needs_decision', 'needs_permission', 'blocked
 
 export function createState() { return new Map(); }
 
+// resolved:本条消息使哪些会话离开了注意力状态(转成普通状态或被删除)。
+// 调用方据此撤掉已经发出去的系统通知——人已经处理完了,通知不该还挂在那儿。
 export function applyMessage(state, serverId, msg) {
   if (!state.has(serverId)) state.set(serverId, new Map());
   const sessions = state.get(serverId);
   switch (msg && msg.type) {
-    case 'snapshot':
+    case 'snapshot': {
+      const incoming = new Map((msg.sessions || []).map((s) => [s.id, s.status]));
+      const resolved = [];
+      for (const [id, status] of sessions) {
+        if (ATTENTION.has(status) && !ATTENTION.has(incoming.get(id))) resolved.push(id);
+      }
       sessions.clear();
-      for (const s of msg.sessions || []) sessions.set(s.id, s.status);
-      return { notify: null };
-    case 'session':
-      if (!msg.session) return { notify: null };
-      if (msg.session.deleted) sessions.delete(msg.session.id);
-      else sessions.set(msg.session.id, msg.session.status);
-      return { notify: null };
+      for (const [id, status] of incoming) sessions.set(id, status);
+      return { notify: null, resolved };
+    }
+    case 'session': {
+      if (!msg.session) return { notify: null, resolved: [] };
+      const { id, deleted, status } = msg.session;
+      const wasAttention = ATTENTION.has(sessions.get(id));
+      if (deleted) sessions.delete(id);
+      else sessions.set(id, status);
+      const stillAttention = !deleted && ATTENTION.has(status);
+      return { notify: null, resolved: wasAttention && !stillAttention ? [id] : [] };
+    }
     case 'notify':
-      return { notify: { serverId, sessionId: msg.id, name: msg.name, reason: msg.reason, statusLine: msg.statusLine } };
+      return {
+        notify: { serverId, sessionId: msg.id, name: msg.name, reason: msg.reason, statusLine: msg.statusLine },
+        resolved: [],
+      };
     default:
-      return { notify: null };
+      return { notify: null, resolved: [] };
   }
 }
 

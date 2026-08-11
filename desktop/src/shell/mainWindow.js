@@ -5,6 +5,7 @@ import { saveServers, loadServers } from './store.js';
 import { normalizeServer, sshStartArgs } from '../core/servers.js';
 import { attentionCount } from '../core/watcher.js';
 import { sshRun } from './sshExec.js';
+import { initSidebar } from './sidebar.js';
 
 // up/server-down/auth-failed 才有专属颜色,其余(idle/connecting/retrying)用 .dot 的默认灰
 const DOT = { up: 'dot-up', 'server-down': 'dot-down', 'auth-failed': 'dot-err' };
@@ -33,6 +34,12 @@ export function initMainWindow(runtime, { onServersChanged }) {
   }
 
   function render() {
+    // 权限被拒时通知会静默失效,必须在界面上说一声,否则用户以为功能坏了。
+    // 放在 render 里是因为权限结果是异步回来的(申请会弹系统对话框),
+    // 回来后 app.js 走 refreshTray → ccw:changed → 这里刷新。
+    const denied = document.getElementById('notify-denied');
+    if (denied) denied.hidden = runtime.notifyGranted !== false;
+
     list.textContent = '';
     for (const s of runtime.servers.filter((x) => x.enabled)) {
       const state = runtime.tunnelStates.get(s.id) || 'idle';
@@ -42,6 +49,7 @@ export function initMainWindow(runtime, { onServersChanged }) {
       row.innerHTML = `<span class="dot ${DOT[state] || ''}"></span>
         <span class="name"></span>${n ? `<span class="badge">${n}</span>` : ''}`;
       row.querySelector('.name').textContent = s.name;
+      row.title = s.name; // 折叠态名称是隐掉的,靠悬停辨认是哪台
       row.onclick = () => showServer(s.id);
       if (state === 'server-down') {
         const btn = document.createElement('button');
@@ -71,6 +79,8 @@ export function initMainWindow(runtime, { onServersChanged }) {
       document.getElementById('form-error').textContent = err.message;
     }
   };
+
+  initSidebar({ toggle: document.getElementById('sidebar-toggle') });
 
   window.addEventListener('ccw:changed', render);
   render();
