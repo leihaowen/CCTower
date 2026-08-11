@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <!-- CCTower: a cool, reduced control beacon — one signal, one deck, one column. -->
+  <defs>
+    <linearGradient id="night" x1="154" y1="83" x2="879" y2="946" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101D31"/>
+      <stop offset="1" stop-color="#050B15"/>
+    </linearGradient>
+    <linearGradient id="ice" x1="376" y1="383" x2="660" y2="716" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D5FBFF"/>
+      <stop offset="1" stop-color="#54C8E2"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="512" y1="526" x2="512" y2="796" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5BD5EC"/>
+      <stop offset="1" stop-color="#19789A"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="220" fill="url(#night)"/>
+  <rect x="51" y="51" width="922" height="922" rx="201" stroke="#A4ECFA" stroke-opacity=".09" stroke-width="4"/>
+  <!-- The signal: deliberately tiny, like a precise attention event. -->
+  <circle cx="512" cy="257" r="25" fill="#BDF8FF"/>
+  <path d="M512 317V374" stroke="#78E0F0" stroke-width="20" stroke-linecap="round"/>
+  <!-- Panoramic deck, abstracted into one calm trapezoid. -->
+  <path d="M323 420L512 360L701 420L640 486H384L323 420Z" fill="url(#ice)"/>
+  <path d="M390 486H634L690 758H334L390 486Z" fill="url(#beam)"/>
+  <path d="M384 486H640" stroke="#E5FDFF" stroke-width="16" stroke-linecap="round"/>
+  <!-- A single horizon line hints at the distributed sessions below the tower. -->
+  <path d="M292 758H732" stroke="#77E4F2" stroke-opacity=".88" stroke-width="24" stroke-linecap="round"/>
+</svg>
