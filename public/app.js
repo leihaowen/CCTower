@@ -342,7 +342,10 @@ let hoverTimer = null;
 function bindHover(cardEl, sessionId) {
   const show = () => {
     const s = state.sessions.get(sessionId);
-    if (!s) return;
+    // 卡片可能已经被重渲染摘掉了(在 380ms 延迟内点开会话就会):脱离文档后
+    // getBoundingClientRect() 全是 0,浮层会被摁到左上角;而且它收不到 mouseleave,
+    // 于是永远关不掉。这种情况直接别显示。
+    if (!s || !cardEl.isConnected) return;
     popover.innerHTML = briefHTML(s);
     popover.hidden = false;
     const r = cardEl.getBoundingClientRect();
@@ -357,7 +360,13 @@ function bindHover(cardEl, sessionId) {
   const leave = () => { clearTimeout(hoverTimer); popover.hidden = true; };
   cardEl.addEventListener('mouseenter', enter);
   cardEl.addEventListener('mouseleave', leave);
-  cardEl.addEventListener('focus', enter);
+  // 卡片是 tabindex="0",点一下就会获得焦点——直接绑 focus 会让"点击"也弹浮层,
+  // 而浮层本意只在悬停时出现。:focus-visible 只在键盘导航(Tab)时匹配,鼠标点击不匹配,
+  // 于是点击不再弹浮层,键盘用户仍能看到 Brief。
+  cardEl.addEventListener('focus', () => {
+    // 老 WebKit 不认 :focus-visible 时 matches() 会抛;按"只在悬停时弹"的本意退回不弹。
+    try { if (cardEl.matches(':focus-visible')) enter(); } catch { /* 不弹 */ }
+  });
   cardEl.addEventListener('blur', leave);
 }
 
@@ -369,6 +378,9 @@ function render() {
   $('#sessions-count').textContent = active.length;
   $('#canvas-count').textContent = active.length;
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
+  // 重渲染会换掉卡片元素,挂起的 hover 定时器必须一起取消:否则它晚一步触发时
+  // 卡片已不在文档里,浮层会挂在左上角关不掉。只置 hidden 挡不住后触发的 show()。
+  clearTimeout(hoverTimer);
   popover.hidden = true;
   // 画布持有 xterm / 监听器,离开视图必须显式拆掉
   if (state.view !== 'canvas' && window.CCCanvas && CCCanvas.isActive()) CCCanvas.dispose();
