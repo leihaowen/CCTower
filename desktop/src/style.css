@@ -17,6 +17,8 @@
   --danger: #e5544b;
   --ok: #2ecc71;
   --warn: #f1c40f;
+  --bg-notice: #4a3a12; /* 提示条底色:压暗的琥珀,深色背景上不刺眼 */
+  --fg-notice: #f3d888;
 
   /* 侧栏宽度:展开够放最长的表单占位文字,折叠只留状态点轨道 */
   --sidebar-w: 208px;
@@ -113,9 +115,9 @@ body.sidebar-collapsed #sidebar-head .head-title {
   flex: 0 0 auto;
   margin: 0;
   padding: 8px 12px;
-  background: #4a3a12;
+  background: var(--bg-notice);
   border-bottom: 1px solid var(--border);
-  color: #f3d888;
+  color: var(--fg-notice);
   font-size: 12px;
   line-height: 1.5;
 }

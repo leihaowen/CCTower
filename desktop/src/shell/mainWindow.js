@@ -82,7 +82,21 @@ export function initMainWindow(runtime, { onServersChanged }) {
 
   initSidebar({ toggle: document.getElementById('sidebar-toggle') });
 
+  // 拆掉某台服务器的 iframe。必须有这个入口:frames 是按 id 缓存的,只要条目还在,
+  // showServer 就会直接复用旧 iframe——而它的 src 里写死了当时的隧道端口。服务器被
+  // 删除/禁用,或改了 ssh 别名、远端端口、隧道换了本地端口之后,那个端口已经失效,
+  // 内容区会一直指着死端口,重启应用才能恢复。
+  // 返回它是否正是当前显示的那台,调用方据此决定要不要重新挑一台显示。
+  function dropServer(id) {
+    const frame = frames.get(id);
+    if (frame) { frame.remove(); frames.delete(id); }
+    const wasActive = activeId === id;
+    if (wasActive) activeId = null;
+    render();
+    return wasActive;
+  }
+
   window.addEventListener('ccw:changed', render);
   render();
-  return { showServer };
+  return { showServer, dropServer };
 }

@@ -120,6 +120,8 @@ async function startTunnel(server, taken) {
       badPorts.add(busy);
       const next = pickPort(portsInUse());
       runtime.localPorts.set(server.id, next);
+      // 已建出来的 iframe 还指着旧端口,拆掉等隧道通了重建
+      if (mainWin?.dropServer(server.id)) shownAny = false;
       console.error(`本地端口 ${busy} 被占用,${server.name} 改用 ${next}`);
       return next;
     },
@@ -150,6 +152,8 @@ function stopServerRuntime(id) {
   runtime.tunnelStates.delete(id);
   dropServer(runtime.watcher, id);
   forgetServer(runtime.alerts, id); // 否则删掉又加回来的服务器会带着上一轮的告警去重状态
+  // iframe 里写死了即将失效的隧道端口,一起拆掉;它正在显示的话要允许重挑一台
+  if (mainWin?.dropServer(id)) shownAny = false;
 }
 
 // 主窗口表单提交后调用:重新读配置,对新增/参数变更(别名或远端端口变了)的服务器

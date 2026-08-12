@@ -378,9 +378,9 @@ function render() {
   $('#sessions-count').textContent = active.length;
   $('#canvas-count').textContent = active.length;
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
-  // 重渲染会换掉卡片元素,挂起的 hover 定时器必须一起取消:否则它晚一步触发时
-  // 卡片已不在文档里,浮层会挂在左上角关不掉。只置 hidden 挡不住后触发的 show()。
-  clearTimeout(hoverTimer);
+  // 不在这里 clearTimeout(hoverTimer):render 除了 WS 事件还有 30 秒定时器在触发,
+  // 正好落在悬停延迟内就会取消本该弹出的浮层。挂起的定时器晚一步触发也无害——
+  // 那时卡片已被换掉,show() 里的 isConnected 判断会拦住它。
   popover.hidden = true;
   // 画布持有 xterm / 监听器,离开视图必须显式拆掉
   if (state.view !== 'canvas' && window.CCCanvas && CCCanvas.isActive()) CCCanvas.dispose();
