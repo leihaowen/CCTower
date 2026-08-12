@@ -14,15 +14,20 @@ import WebSocket from 'ws';
 import { createState, applyMessage } from '../src/core/watcher.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const PORT = 17977;
+// 刻意放在 core/ports.js 的 17080–17999 之外:那个区间是客户端隧道的动态端口池,
+// 真机上跑测试时有可能正好有条隧道占着这里,测试就会因为 EADDRINUSE 莫名失败。
+const PORT = 18977;
 
-async function waitHttp(url, ms = 10000) {
+// 起真服务端比纯逻辑测试慢得多,而 node --test 会并行跑多个测试文件抢 CPU,
+// 预算给太紧会变成偶发失败(实测 10 秒会偶发超时)。给足时间,真起不来照样会失败。
+async function waitHttp(url, ms = 30000) {
   const t0 = Date.now();
+  let lastErr = '';
   while (Date.now() - t0 < ms) {
-    try { const r = await fetch(url); if (r.status < 500) return; } catch { }
+    try { const r = await fetch(url); if (r.status < 500) return; } catch (e) { lastErr = e.message; }
     await new Promise((r) => setTimeout(r, 200));
   }
-  throw new Error('服务端起不来');
+  throw new Error(`服务端起不来(等了 ${ms}ms,${url}${lastErr ? ',最后一次错误:' + lastErr : ''})`);
 }
 
 test('真服务端:伪造隧道 Host + tauri Origin 仍能连 WS 并拿到 snapshot', async () => {
@@ -44,7 +49,7 @@ test('真服务端:伪造隧道 Host + tauri Origin 仍能连 WS 并拿到 snaps
       });
       ws.on('message', (d) => { resolve(JSON.parse(String(d))); ws.close(); });
       ws.on('error', reject);
-      setTimeout(() => reject(new Error('等 snapshot 超时')), 8000);
+      setTimeout(() => reject(new Error('等 snapshot 超时')), 15000);
     });
     assert.equal(msg.type, 'snapshot');
     assert.ok(Array.isArray(msg.sessions));

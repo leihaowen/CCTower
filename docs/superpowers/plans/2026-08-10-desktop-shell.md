@@ -903,9 +903,9 @@ import WebSocket from 'ws';
 import { createState, applyMessage } from '../src/core/watcher.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const PORT = 17977;
+const PORT = 18977; // 必须在 17080–17999(隧道动态端口池)之外,否则真机上会撞端口
 
-async function waitHttp(url, ms = 10000) {
+async function waitHttp(url, ms = 30000) { // 起真服务端 + 并行跑测试,10000 会偶发超时
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     try { const r = await fetch(url); if (r.status < 500) return; } catch { }
