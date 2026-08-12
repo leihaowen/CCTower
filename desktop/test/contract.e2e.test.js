@@ -56,8 +56,19 @@ test('真服务端:伪造隧道 Host + tauri Origin 仍能连 WS 并拿到 snaps
     const st = createState();
     applyMessage(st, 'e2e', msg); // 契约:归约器能直接消费真实消息
   } finally {
-    // 无论成功还是断言失败都要杀掉子进程、清理临时目录,防止残留
+    // 无论成功还是断言失败都要杀掉子进程、清理临时目录,防止残留。
+    //
+    // 必须等它真的退出再删:服务端收到 SIGTERM 会走优雅退出——先 manager.dispose()
+    // 把会话状态落盘再关监听(见 server/index.js 的 gracefulShutdown,兜底 2 秒),
+    // 而 kill() 是立即返回的。不等就删的话,rmSync 正遍历目录时服务端又写出
+    // sessions.json 之类的新文件,rmdir 就会撞上 ENOTEMPTY —— CI 上偶发失败过。
     srv.kill('SIGTERM');
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    await new Promise((resolve) => {
+      if (srv.exitCode !== null || srv.signalCode !== null) return resolve();
+      const t = setTimeout(() => { srv.kill('SIGKILL'); resolve(); }, 5000); // 赖着不走就强杀
+      srv.once('exit', () => { clearTimeout(t); resolve(); });
+    });
+    // 再兜一层:万一还有落后的写入,重试几次而不是直接失败
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

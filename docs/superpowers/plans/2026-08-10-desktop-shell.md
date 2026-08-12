@@ -936,8 +936,15 @@ test('真服务端:伪造隧道 Host + tauri Origin 仍能连 WS 并拿到 snaps
     const st = createState();
     applyMessage(st, 'e2e', msg); // 契约:归约器能直接消费真实消息
   } finally {
+    // 必须等进程真的退出再删:服务端的优雅退出会先把状态落盘(最多 2 秒),
+    // 不等就删会撞 ENOTEMPTY(CI 上偶发失败过)
     srv.kill('SIGTERM');
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    await new Promise((resolve) => {
+      if (srv.exitCode !== null || srv.signalCode !== null) return resolve();
+      const t = setTimeout(() => { srv.kill('SIGKILL'); resolve(); }, 5000);
+      srv.once('exit', () => { clearTimeout(t); resolve(); });
+    });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 ```
