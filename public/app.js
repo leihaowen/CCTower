@@ -705,6 +705,7 @@ function renderWorkspace() {
       <span class="status-pill" id="ws-pill" style="--pc:${st.color}"><span class="dot"></span>${st.label}</span>
       <span class="ws-meta" id="ws-meta"></span>
       <div class="ws-actions">
+        <button class="btn-ghost" id="ws-release" title="交出键盘控制权,本视图变为只读观察" hidden>退出接管</button>
         <button class="btn-ghost" id="ws-redraw" title="重连终端并让 TUI 全量重绘,修复画面/尺寸异常">⟳ 刷新画面</button>
         ${s.worktree ? '<button class="btn-ghost" id="ws-review">审阅改动</button>' : ''}
         <button class="btn-ghost" id="ws-refresh">刷新摘要</button>
@@ -800,15 +801,24 @@ function renderWorkspace() {
   });
 
   let controller = false;
+  let released = false; // 本视图内主动退出过接管:断线重连后不再自动抢回
   const connectTerm = (replay) => {
     if (replay && term) term.reset(); // 重连时服务端会整体回放缓冲区,先清屏避免重复
+    // 进入会话即接管,但每条连接只自动抢一次:之后控制权被别的窗口拿走时
+    // 只显示只读条不回抢,否则两个都开着的窗口会无限互抢
+    let autoTake = !released;
     termWs = new WebSocket(`${WS_BASE}/ws/term/${s.id}`, wsProto());
     termWs.onmessage = (e) => {
       const m = JSON.parse(e.data);
       if (m.type === 'data') term.write(m.data);
       else if (m.type === 'role') {
+        if (!m.controller && autoTake && termWs.readyState === 1) {
+          termWs.send(JSON.stringify({ type: 'take-control' })); // 服务端随后会广播新 role
+        }
+        autoTake = false;
         controller = m.controller;
         $('#ro-bar') && ($('#ro-bar').hidden = controller);
+        $('#ws-release') && ($('#ws-release').hidden = !controller);
         if (controller && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
       } else if (m.type === 'exit') term.write(`\r\n\x1b[90m[进程已退出,code ${m.code}]\x1b[0m\r\n`);
     };
@@ -822,7 +832,14 @@ function renderWorkspace() {
   connectTerm(false);
   term.onData((d) => { if (controller && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'input', data: d })); });
   term.onResize(({ cols, rows }) => { if (controller && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols, rows })); });
-  $('#ro-take').onclick = () => termWs.readyState === 1 && termWs.send(JSON.stringify({ type: 'take-control' }));
+  $('#ro-take').onclick = () => {
+    released = false; // 手动接回后,后续重连恢复自动接管
+    if (termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'take-control' }));
+  };
+  $('#ws-release').onclick = () => {
+    released = true;
+    if (termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'release-control' }));
+  };
   termRO = new ResizeObserver(() => fit && fit.fit());
   termRO.observe($('#term-host'));
 

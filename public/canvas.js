@@ -1022,13 +1022,20 @@
     const showDims = () => { if (ptyEl && CV.term) ptyEl.textContent = `PTY ${CV.term.cols}×${CV.term.rows}`; };
     showDims();
 
+    // 展开即接管:只在首个 role 消息时自动抢一次,之后被别的窗口拿走不回抢
+    // (两个视图无限互抢会死循环);按钮双态:接管中显示「退出接管」
+    let autoTake = true;
     CV.termWs = new WebSocket(`${WS_BASE}/ws/term/${s.id}`, wsProto());
     CV.termWs.onmessage = (e) => {
       const m = JSON.parse(e.data);
       if (m.type === 'data') CV.term.write(m.data);
       else if (m.type === 'role') {
+        if (!m.controller && autoTake && CV.termWs.readyState === 1) {
+          CV.termWs.send(JSON.stringify({ type: 'take-control' })); // 服务端随后广播新 role
+        }
+        autoTake = false;
         CV.termCtl = m.controller;
-        if (takeEl) takeEl.hidden = m.controller;
+        if (takeEl) { takeEl.hidden = false; takeEl.textContent = m.controller ? '退出接管' : '接管控制'; }
         if (hintEl) hintEl.textContent = m.controller ? '键盘直连 PTY · Esc 收起' : '只读观察 —— 点「接管控制」后才能输入';
         if (m.controller && CV.termWs.readyState === 1) {
           CV.termWs.send(JSON.stringify({ type: 'resize', cols: CV.term.cols, rows: CV.term.rows }));
@@ -1038,7 +1045,10 @@
       }
     };
     CV.termWs.onclose = () => { if (hintEl && CV.expanded) hintEl.textContent = '连接已断开'; };
-    if (takeEl) takeEl.onclick = () => CV.termWs.readyState === 1 && CV.termWs.send(JSON.stringify({ type: 'take-control' }));
+    if (takeEl) takeEl.onclick = () => {
+      if (CV.termWs.readyState !== 1) return;
+      CV.termWs.send(JSON.stringify({ type: CV.termCtl ? 'release-control' : 'take-control' }));
+    };
     CV.term.onData((d) => { if (CV.termCtl && CV.termWs.readyState === 1) CV.termWs.send(JSON.stringify({ type: 'input', data: d })); });
     CV.term.onResize(({ cols, rows }) => {
       showDims();
