@@ -476,13 +476,26 @@ function renderSessions() {
     const on = group === 'f' ? state.filter === id : state.typeFilter === id;
     return `<button class="chip ${on ? 'on' : ''}" data-${group}="${id}">${label}</button>`;
   };
-  main.innerHTML = `<div class="page-head"><h1>All Sessions</h1><span class="sub">共 ${list.length} 条</span></div>
+  // 按项目目录分组:同一文件夹的会话放一起。list 已按最近活动排序,
+  // 因此每组第一条就是组内最新 → 组间直接按首条排序即可
+  const groups = new Map();
+  for (const s of list) {
+    const k = s.projectDir || '(未知目录)';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(s);
+  }
+  const sections = [...groups.entries()].map(([dir, ss]) => `
+    <section class="group">
+      <div class="group-head proj" title="${esc(dir)}">▸ ${esc(dirTail(dir))}<span class="path">${esc(dir)}</span><span class="n">${ss.length}</span></div>
+      <div class="cards">${ss.map(cardHTML).join('')}</div>
+    </section>`).join('');
+  main.innerHTML = `<div class="page-head"><h1>All Sessions</h1><span class="sub">共 ${list.length} 条 · ${groups.size} 个项目</span></div>
     <div class="filters">
       ${chip('active', '全部活跃', 'f')}${chip('attention', '需要注意', 'f')}${chip('archived', '已归档', 'f')}
       <span style="width:12px"></span>
       ${chip('all', '所有类型', 't')}${chip('claude', 'Claude Code', 't')}${chip('terminal', 'Terminal', 't')}
     </div>
-    <div class="cards">${list.map(cardHTML).join('') || '<div class="empty"><strong>没有匹配的 session</strong></div>'}</div>`;
+    ${sections || '<div class="empty"><strong>没有匹配的 session</strong></div>'}`;
   main.querySelectorAll('[data-f]').forEach((b) => b.onclick = () => { state.filter = b.dataset.f; render(); });
   main.querySelectorAll('[data-t]').forEach((b) => b.onclick = () => { state.typeFilter = b.dataset.t; render(); });
   wireCards();

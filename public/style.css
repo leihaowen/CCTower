@@ -138,6 +138,9 @@ nav { display: flex; flex-direction: column; gap: 4px; }
   text-transform: uppercase; margin-bottom: 10px; display: flex; gap: 8px; align-items: center;
 }
 .group-head .n { color: var(--faint); }
+/* All Sessions 的项目分组头:目录尾巴 + 完整路径 */
+.group-head.proj { color: var(--muted); text-transform: none; letter-spacing: .04em; font-size: 12.5px; }
+.group-head.proj .path { color: var(--faint); font-size: 10.5px; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46ch; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 12px; }
 
 /* 状态灯:绿色跑马灯=运行,黄闪=需要你,蓝=就绪,红=意外,绿常亮=完成 */
@@ -700,6 +703,44 @@ dialog h2 { font-size: 17px; margin-bottom: 16px; }
 .cv-map-dots i { position: absolute; border-radius: 2px; }
 .cv-map-dots i.a { animation: breathe 1.7s ease-in-out infinite; }
 .cv-map-vp { position: absolute; border: 1px solid var(--amber); background: color-mix(in srgb, var(--amber) 6%, transparent); border-radius: 3px; pointer-events: none; }
+
+/* 左侧会话停靠列表:按项目分组,点击居中;收起时只剩一个竖排小把手 */
+.cv-dock {
+  position: absolute; left: 12px; top: 12px; z-index: 23;
+  max-height: calc(100% - 90px); /* 给底部 HUD 留位置 */
+  display: flex; flex-direction: column; width: 34px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, .45); overflow: hidden;
+}
+.cv-dock.open { width: 216px; }
+.cv-dock-tab {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 7px 9px;
+  font: 10.5px/1 var(--mono); color: var(--muted); letter-spacing: .6px;
+  cursor: pointer; white-space: nowrap; overflow: hidden;
+}
+.cv-dock-tab:hover { color: var(--fg); }
+.cv-dock-arrow { margin-left: auto; color: var(--faint); }
+.cv-dock:not(.open) .cv-dock-tab { writing-mode: vertical-rl; padding: 10px 8px; gap: 8px; }
+.cv-dock:not(.open) .cv-dock-body { display: none; }
+.cv-dock-body { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 2px 6px 8px; }
+.cv-dock-grp { margin-top: 6px; }
+.cv-dock-dir {
+  display: flex; align-items: center; gap: 6px; padding: 4px 4px 3px;
+  font: 10px/1.2 var(--mono); color: var(--faint); letter-spacing: .4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border-bottom: 1px solid var(--border);
+}
+.cv-dock-dir .n { margin-left: auto; }
+.cv-dock-it {
+  display: flex; align-items: center; gap: 7px; width: 100%; padding: 5px 4px;
+  font: 11.5px/1.3 var(--ui); color: var(--muted); text-align: left;
+  border-radius: 6px; cursor: pointer;
+}
+.cv-dock-it:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
+.cv-dock-it.on { background: color-mix(in srgb, var(--amber) 14%, transparent); color: var(--fg); }
+.cv-dock-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; }
+.cv-dock-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-dock-empty { padding: 10px 6px; font: 11px/1.4 var(--ui); color: var(--faint); }
 
 .cv-hud {
   position: absolute; left: 14px; bottom: 14px; z-index: 22;
