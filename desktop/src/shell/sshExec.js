@@ -20,7 +20,12 @@ export function tauriSpawn() {
       .then((c) => { child = c; if (wantKill) c.kill(); })
       .catch((err) => { errCbs.forEach((f) => f(String(err))); fireExit(-1); });
     return {
-      kill: () => { wantKill = true; if (child) child.kill(); },
+      // 返回 kill 的 Promise:退出应用前要 await,否则进程先消失,ssh 会被系统收养
+      // (PPID → 1)继续占着本地端口,下次启动就抢不到。
+      kill: () => {
+        wantKill = true;
+        return child ? child.kill() : Promise.resolve();
+      },
       onExit: (cb) => exitCbs.push(cb),
       onStderr: (cb) => errCbs.push(cb),
     };

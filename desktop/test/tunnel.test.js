@@ -145,3 +145,84 @@ test('探活在途时子进程退出重连:过期结果被丢弃', async () => {
   assert.equal(t.state, 'up');
   assert.equal(sp.calls.length, 2);
 });
+
+// ---- 端口冲突与退避:实测过的"状态灯匀速闪烁"就是这两条一起失效造成的 ----
+
+function makeConflictTunnel({ probeResults, ports }) {
+  const timers = makeTimers();
+  const sp = makeSpawner();
+  const states = [];
+  const conflicts = [];
+  let clock = 0;
+  const t = new Tunnel({
+    server: { id: 'a', name: 'a', sshAlias: 'a', remotePort: 7080, token: '', enabled: true },
+    localPort: 17080,
+    spawn: sp.spawn,
+    probe: async () => probeResults.shift() ?? false,
+    onState: (s, d) => states.push([s, d]),
+    setTimer: timers.setTimer, clearTimer: timers.clearTimer,
+    now: () => clock,
+    onPortConflict: (busy) => { conflicts.push(busy); return ports.shift(); },
+  });
+  return { t, timers, sp, states, conflicts, tick: (ms) => { clock += ms; } };
+}
+
+test('bind 冲突:换端口重试,不再死磕同一个端口', async () => {
+  const { t, timers, sp, conflicts } = makeConflictTunnel({ probeResults: [], ports: [17081] });
+  t.start();
+  sp.child().emitStderr('bind [127.0.0.1]:17080: Address already in use\ncannot listen to port: 17080');
+  sp.child().emitExit(255);
+  assert.deepEqual(conflicts, [17080], '应把被占端口报给分配器');
+  assert.equal(t.localPort, 17081);
+  await timers.fire();
+  assert.deepEqual(sp.calls[1].slice(0, 3), ['-N', '-L', '17081:127.0.0.1:7080'], '重连必须用新端口');
+});
+
+test('bind 冲突:Could not request local forwarding 同样算冲突', async () => {
+  const { t, sp, conflicts } = makeConflictTunnel({ probeResults: [], ports: [17081] });
+  t.start();
+  sp.child().emitStderr('Could not request local forwarding.');
+  sp.child().emitExit(255);
+  assert.deepEqual(conflicts, [17080]);
+});
+
+test('分配器给不出新端口时沿用原端口,不把 localPort 弄成 undefined', async () => {
+  const { t, sp } = makeConflictTunnel({ probeResults: [], ports: [undefined] });
+  t.start();
+  sp.child().emitStderr('bind [127.0.0.1]:17080: Address already in use');
+  sp.child().emitExit(255);
+  assert.equal(t.localPort, 17080);
+});
+
+// 这条是闪烁的直接原因:别人占着端口时探活一直成功,旧实现在探活成功里把 _attempt
+// 归零,退避永远停在第一档 → 匀速闪烁。现在退避只看子进程活了多久。
+test('探活成功但子进程秒退:退避必须继续增长,不被探活归零', async () => {
+  const { t, timers, sp, states } = makeConflictTunnel({
+    probeResults: [true, true, true], ports: [],
+  });
+  t.start();
+  await timers.fire();                    // 立即探活成功 → up(实际是别人在应答)
+  assert.equal(t.state, 'up');
+  sp.child().emitExit(255);               // 自己的 ssh 其实已经死了
+  const first = states.filter((s) => s[0] === 'retrying').pop()[1];
+  await timers.fire();
+  await timers.fire();
+  sp.child().emitExit(255);
+  const second = states.filter((s) => s[0] === 'retrying').pop()[1];
+  const ms = (d) => Number(String(d).match(/^(\d+)/)[1]);
+  assert.ok(ms(second) > ms(first), `退避应增长,却是 ${first} → ${second}`);
+});
+
+test('子进程活得够久再退出:退避归零,当作一次成功的连接', async () => {
+  const { t, timers, sp, states, tick } = makeConflictTunnel({ probeResults: [true], ports: [] });
+  t.start();
+  await timers.fire();
+  sp.child().emitExit(1);
+  const firstDelay = states.filter((s) => s[0] === 'retrying').pop()[1];
+  await timers.fire();                    // 重连
+  tick(60_000);                           // 这一代活了 60 秒
+  sp.child().emitExit(1);
+  const afterLongRun = states.filter((s) => s[0] === 'retrying').pop()[1];
+  const ms = (d) => Number(String(d).match(/^(\d+)/)[1]);
+  assert.equal(ms(afterLongRun), ms(firstDelay), '长时间在线后退避应回到第一档');
+});

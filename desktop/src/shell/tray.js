@@ -2,11 +2,12 @@
 import { TrayIcon } from '@tauri-apps/api/tray';
 import { Menu, MenuItem, PredefinedMenuItem } from '@tauri-apps/api/menu';
 import { defaultWindowIcon } from '@tauri-apps/api/app';
-import { exit } from '@tauri-apps/plugin-process';
 
 let tray = null;
 
-export async function updateTray(model, { onOpen, onBootstrap, onOpenWindow }) {
+// 退出走 onQuit 回调而不是在这里直接 exit(0):退出前必须先停掉所有隧道,
+// 否则 ssh 子进程会被系统收养并继续占着本地端口(见 shell/app.js 的 quitApp)。
+export async function updateTray(model, { onOpen, onBootstrap, onOpenWindow, onQuit }) {
   const items = [];
   // 无条件置顶的入口:首启零服务器时,下方列表为空,这是唯一能唤起主窗口(填写添加服务器表单)的路径
   items.push(await MenuItem.new({ id: 'open-window', text: '打开 CCTower', action: () => onOpenWindow() }));
@@ -18,7 +19,7 @@ export async function updateTray(model, { onOpen, onBootstrap, onOpenWindow }) {
     }
   }
   items.push(await PredefinedMenuItem.new({ item: 'Separator' }));
-  items.push(await MenuItem.new({ id: 'quit', text: '退出 CCTower', action: () => exit(0) }));
+  items.push(await MenuItem.new({ id: 'quit', text: '退出 CCTower', action: () => onQuit() }));
   const menu = await Menu.new({ items });
   if (!tray) {
     tray = await TrayIcon.new({ icon: await defaultWindowIcon(), menu, tooltip: 'CCTower' });

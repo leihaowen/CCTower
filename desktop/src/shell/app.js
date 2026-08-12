@@ -7,7 +7,8 @@ import { ensurePermission, pushNotification, dismissNotifications, onNotificatio
 import { updateTray } from './tray.js';
 import { initMainWindow } from './mainWindow.js';
 import { Tunnel } from '../core/tunnel.js';
-import { pickPort } from '../core/ports.js';
+import { pickPort, pickFreePort } from '../core/ports.js';
+import { exit } from '@tauri-apps/plugin-process';
 import { sshStartArgs } from '../core/servers.js';
 import { createState, applyMessage, dropServer } from '../core/watcher.js';
 import { buildTrayModel } from '../core/trayModel.js';
@@ -33,6 +34,15 @@ const runtime = {
 
 // 持续型故障没有新事件可依附,靠定时检查兜出来
 const ALERT_TICK_MS = 15_000;
+// 退出前留给 kill 落地的时间上限:超时也要退,不能因为一个卡住的 kill 就退不掉
+const QUIT_GRACE_MS = 1500;
+
+// 已证实 bind 不上的本地端口(被别的进程占着),重新分配时要避开
+const badPorts = new Set();
+
+function portsInUse() {
+  return new Set([...runtime.localPorts.values(), ...badPorts]);
+}
 
 let mainWin = null; // initMainWindow() 的返回值,托盘"打开"要用它把内容区切到对应服务器
 let shownAny = false; // 是否已经往内容区放过页面,避免抢掉用户自己选的那台
@@ -50,7 +60,7 @@ function showFirstReadyServer() {
 export async function startApp() {
   runtime.servers = await loadServers();
   const taken = new Set();
-  for (const server of runtime.servers.filter((s) => s.enabled)) startTunnel(server, taken);
+  for (const server of runtime.servers.filter((s) => s.enabled)) await startTunnel(server, taken);
   await refreshTray();
   mainWin = initMainWindow(runtime, { onServersChanged: restartServers });
   await wireWindowHide();
@@ -96,15 +106,39 @@ function pushDueAlerts() {
   }
 }
 
-function startTunnel(server, taken) {
-  const port = pickPort(taken); taken.add(port);
+async function startTunnel(server, taken) {
+  // 先探一探再用:被上次退出留下的孤儿隧道占着的端口会答 HTTP,必须跳过
+  const port = await pickFreePort(taken, httpProbe);
+  taken.add(port);
   runtime.localPorts.set(server.id, port);
   const tunnel = new Tunnel({
     server, localPort: port, spawn: tauriSpawn(), probe: httpProbe,
     onState: (state, detail) => onTunnelState(server, state, detail),
+    // ssh 报 bind 冲突时换端口。runtime.localPorts 必须跟着改:WS 连接与 iframe
+    // 都按它取端口,不同步的话隧道通了但页面还指着旧端口。
+    onPortConflict: (busy) => {
+      badPorts.add(busy);
+      const next = pickPort(portsInUse());
+      runtime.localPorts.set(server.id, next);
+      console.error(`本地端口 ${busy} 被占用,${server.name} 改用 ${next}`);
+      return next;
+    },
   });
   runtime.tunnels.set(server.id, tunnel);
   tunnel.start();
+}
+
+// 托盘"退出 CCTower":先停隧道再退。exit(0) 不会替我们收尾——没杀掉的 ssh 会被
+// 系统收养(PPID → 1)继续持有本地端口,下次启动抢不到就会陷入重连循环。
+async function quitApp() {
+  const kills = [...runtime.tunnels.values()].map((t) => {
+    try { return t.stop(); } catch (err) { console.error('停止隧道失败:', err); return null; }
+  });
+  await Promise.race([
+    Promise.allSettled(kills),
+    new Promise((resolve) => setTimeout(resolve, QUIT_GRACE_MS)),
+  ]);
+  await exit(0);
 }
 
 function stopServerRuntime(id) {
@@ -132,9 +166,9 @@ async function restartServers() {
     if (!cur || !cur.enabled || changed) stopServerRuntime(id);
   }
 
-  const taken = new Set(runtime.localPorts.values());
+  const taken = portsInUse();
   for (const server of next.filter((s) => s.enabled)) {
-    if (!runtime.tunnels.has(server.id)) startTunnel(server, taken);
+    if (!runtime.tunnels.has(server.id)) await startTunnel(server, taken);
   }
 
   runtime.servers = next;
@@ -222,6 +256,7 @@ async function refreshTray() {
         shownAny = true; // 用户明确选了,别再被默认逻辑顶掉
         mainWin?.showServer(id);
       },
+      onQuit: quitApp,
       onBootstrap: async (id) => {
         const server = runtime.servers.find((s) => s.id === id);
         const { code, stderr } = await sshRun(sshStartArgs(server));
