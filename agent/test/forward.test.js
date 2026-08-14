@@ -24,6 +24,25 @@ function listen(server) {
   return new Promise((r) => server.listen(0, '127.0.0.1', () => r(server.address().port)));
 }
 
+// WS 测试专用收尾:
+// 1) 先对 stream 触发 'end',走一遍生产代码本来就有的收尾路径——forward.js 的
+//    handleWs 会据此调用 local.close(),这是隧道侧正常结束时代理应有的行为。
+// 2) 但 wss.close()/http.Server.close() 只停止接受新连接,不终止已建立的连接;
+//    真正保证进程能退出、不把测试挂死的,是下面对 wss.clients 逐个 terminate()——
+//    这是不依赖 handleWs 是否正确关闭本机连接的硬兜底(已用变异验证:即便注释掉
+//    handleWs 里的 local.close() 调用,靠这个兜底测试依然能在断言全部通过后让进程
+//    正常退出)。等一小段时间给正常关闭握手,再强制 terminate,避免网络抖动导致握手
+//    迟迟不完成、把测试进程卡住。
+function closeWs(stream, wss, srv) {
+  return new Promise((resolve) => {
+    stream.emit('end');
+    setTimeout(() => {
+      for (const client of wss.clients) client.terminate();
+      wss.close(() => srv.close(() => resolve()));
+    }, 50);
+  });
+}
+
 test('头部净化:cookie/origin/x-ccw-token 被丢弃,host 改写,本机令牌注入', () => {
   const h = localHeaders({
     cookie: 'ccgw_session=secret', origin: 'https://cc.example.com', referer: 'https://cc.example.com/',
@@ -81,7 +100,7 @@ test('HTTP 转发:本机端口没人监听时 fail 出错,而不是静默挂起'
   assert.ok(stream.failure, '必须把失败原因告诉网关');
 });
 
-test('WS 转发:双向消息往返且 text/binary 语义不丢', async () => {
+test('WS 转发:双向消息往返且 text/binary 语义不丢', async (t) => {
   const srv = http.createServer();
   const wss = new WebSocketServer({ server: srv, path: '/ws/events' });
   wss.on('connection', (ws) => {
@@ -91,6 +110,8 @@ test('WS 转发:双向消息往返且 text/binary 语义不丢', async () => {
   const port = await listen(srv);
   const stream = new FakeStream({ type: 'ws', path: '/ws/events' });
   handleStream(stream, { localPort: port, localToken: '' });
+  // 放在 t.after 里:即便下面的断言抛出,也一定会收尾,不留活连接
+  t.after(() => closeWs(stream, wss, srv));
 
   await stream.waitFor('_wrote');
   const first = unpackWsMessage(stream.chunks[0]);
@@ -102,11 +123,9 @@ test('WS 转发:双向消息往返且 text/binary 语义不丢', async () => {
   const echoed = unpackWsMessage(stream.chunks[stream.chunks.length - 1]);
   assert.equal(echoed.isBinary, true);
   assert.deepEqual(Buffer.from(echoed.data), Buffer.from([1, 2, 3]));
-
-  wss.close(); srv.close();
 });
 
-test('WS 转发:本机连不上时 fail,连上前到达的消息不丢(排队后补发)', async () => {
+test('WS 转发:本机连不上时 fail,连上前到达的消息不丢(排队后补发)', async (t) => {
   const srv = http.createServer();
   const wss = new WebSocketServer({ server: srv, path: '/ws/term/1' });
   const got = [];
@@ -115,16 +134,17 @@ test('WS 转发:本机连不上时 fail,连上前到达的消息不丢(排队后
 
   const stream = new FakeStream({ type: 'ws', path: '/ws/term/1' });
   handleStream(stream, { localPort: port, localToken: '' });
+  // stream 这条真连上了本机,收尾时必须走一遍 handleWs 的关闭路径,否则连接会一直挂着
+  t.after(() => closeWs(stream, wss, srv));
   stream.emit('data', packWsMessage(Buffer.from('抢跑的输入'), false)); // 本机 ws 还没 open
   await new Promise((r) => setTimeout(r, 300));
   assert.deepEqual(got, ['抢跑的输入']);
 
+  // dead 连的是端口 1,必然连不上,fail 是同步路径里就会走到的,没有本机 socket 需要收尾
   const dead = new FakeStream({ type: 'ws', path: '/ws/term/1' });
   handleStream(dead, { localPort: 1, localToken: '' });
   await dead.waitFor('_failed');
   assert.ok(dead.failure);
-
-  wss.close(); srv.close();
 });
 
 test('未知流类型直接 fail', () => {
