@@ -30,6 +30,12 @@ function wsSubprotocols(localToken) {
   return [`ccw.token.${Buffer.from(String(localToken), 'utf8').toString('base64url')}`];
 }
 
+// WS 排队上限:本机握手正常几十毫秒内完成,真要是迟迟等不到 open(本机应用瘫了、
+// 端口通但应用层没起来等),继续无脑攒 pending 就是无界内存增长——agent 常驻在用户
+// 服务器上被 systemd 拉起,一条卡住的流不该有机会把内存吃穿。1MiB 对正常的终端/表单
+// 输入绰绰有余,真超过大概率是本机服务出了问题,不如尽早失败让上层看到。
+const DEFAULT_MAX_PENDING_BYTES = 1024 * 1024;
+
 function handleHttp(stream, meta, opts) {
   const req = http.request({
     host: '127.0.0.1',
@@ -65,20 +71,39 @@ function handleWs(stream, meta, opts) {
   }
   // 浏览器的第一个输入常常比本机握手更快到达,丢了就是"打的字没反应"
   const pending = [];
+  const maxPendingBytes = opts.maxPendingBytes || DEFAULT_MAX_PENDING_BYTES;
+  let pendingBytes = 0;
   let open = false;
+  // fail 只报一次:排队超限主动 terminate() 本机连接后,ws 库自己也会异步吐出一个
+  // "WebSocket was closed before the connection was established" 之类的 error 事件,
+  // 这个 done 标记保证后到的 error 不会把已经报给网关的、更准确的超限原因覆盖掉。
+  let done = false;
   local.on('open', () => {
     open = true;
     stream.headers({ open: true });
     for (const m of pending.splice(0)) local.send(m.data, { binary: m.isBinary });
+    pendingBytes = 0;
   });
   local.on('message', (data, isBinary) => stream.write(packWsMessage(data, isBinary)));
   local.on('close', () => stream.end());
-  local.on('error', (e) => stream.fail(`本机 WS 失败:${e.message}`));
+  local.on('error', (e) => {
+    if (done) return;
+    done = true;
+    stream.fail(`本机 WS 失败:${e.message}`);
+  });
   stream.on('data', (buf) => {
+    if (done) return;
     let m;
     try { m = unpackWsMessage(buf); } catch { return; }
-    if (open) local.send(m.data, { binary: m.isBinary });
-    else pending.push(m);
+    if (open) { local.send(m.data, { binary: m.isBinary }); return; }
+    pendingBytes += m.data.length;
+    if (pendingBytes > maxPendingBytes) {
+      done = true;
+      stream.fail(`本机 WS 长时间未完成握手,排队数据超过 ${maxPendingBytes} 字节上限`);
+      try { local.terminate(); } catch { /* 已关 */ }
+      return;
+    }
+    pending.push(m);
   });
   stream.on('end', () => { try { local.close(); } catch { /* 已关 */ } });
   stream.on('aborted', () => { try { local.terminate(); } catch { /* 已关 */ } });
@@ -86,9 +111,17 @@ function handleWs(stream, meta, opts) {
 
 function handleStream(stream, opts) {
   const meta = stream.meta || {};
-  if (meta.type === 'http') return handleHttp(stream, meta, opts);
-  if (meta.type === 'ws') return handleWs(stream, meta, opts);
-  return stream.fail(`未知流类型 ${meta.type}`);
+  try {
+    if (meta.type === 'http') return handleHttp(stream, meta, opts);
+    if (meta.type === 'ws') return handleWs(stream, meta, opts);
+    return stream.fail(`未知流类型 ${meta.type}`);
+  } catch (e) {
+    // 畸形 meta(比如 header 里混进控制字符)会让 http.request()/WebSocket 构造函数
+    // 同步抛出 TypeError,不会走各自的 on('error') 回调。agent 是常驻进程,被 systemd
+    // 拉起来跑在用户的服务器上,一条坏帧就把整个进程打崩(然后反复重启)是不可接受的——
+    // 必须兜住,把故障限制在这一条流内,用 fail() 告诉网关,而不是让进程崩溃。
+    stream.fail(`处理流失败:${e.message}`);
+  }
 }
 
 module.exports = { handleStream, localHeaders, wsSubprotocols };

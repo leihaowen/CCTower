@@ -4,6 +4,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const http = require('node:http');
+const net = require('node:net');
 const { EventEmitter } = require('node:events');
 const { WebSocketServer } = require('ws');
 const { handleStream, localHeaders, wsSubprotocols } = require('../src/forward');
@@ -65,7 +66,7 @@ test('没配本机令牌时不注入 x-ccw-token', () => {
   assert.deepEqual(wsSubprotocols('abc'), ['ccw.token.' + Buffer.from('abc').toString('base64url')]);
 });
 
-test('HTTP 转发:请求到达本机,响应状态/头/体原样回传', async () => {
+test('HTTP 转发:请求到达本机,响应状态/头/体原样回传', async (t) => {
   let seen = null;
   const srv = http.createServer((req, res) => {
     seen = { method: req.method, url: req.url, headers: req.headers };
@@ -78,6 +79,10 @@ test('HTTP 转发:请求到达本机,响应状态/头/体原样回传', async ()
     });
   });
   const port = await listen(srv);
+  // 放进 t.after:即便下面的断言抛出也要收尾。closeAllConnections() 是硬兜底——
+  // 不依赖 keep-alive 连接是否已经自然结束,断言中途失败时也能让端口立刻释放、
+  // 进程正常退出,而不是像裸的 srv.close() 那样可能要等连接结束才会触发回调。
+  t.after(() => new Promise((r) => { srv.closeAllConnections(); srv.close(r); }));
   const stream = new FakeStream({ type: 'http', method: 'POST', path: '/api/sessions?x=1', headers: { 'content-type': 'application/json' } });
   handleStream(stream, { localPort: port, localToken: '' });
   stream.emit('data', Buffer.from('{"name":"a"}'));
@@ -89,7 +94,6 @@ test('HTTP 转发:请求到达本机,响应状态/头/体原样回传', async ()
   assert.equal(stream.sentHeaders.status, 201);
   assert.equal(stream.sentHeaders.headers['content-type'], 'application/json');
   assert.equal(stream.body(), '{"ok":true}');
-  srv.close();
 });
 
 test('HTTP 转发:本机端口没人监听时 fail 出错,而不是静默挂起', async () => {
@@ -151,4 +155,45 @@ test('未知流类型直接 fail', () => {
   const stream = new FakeStream({ type: 'ftp' });
   handleStream(stream, { localPort: 7080, localToken: '' });
   assert.match(stream.failure, /未知流类型/);
+});
+
+test('畸形 header(控制字符)只让单条流 fail,不会把 agent 进程打崩', () => {
+  // http.request() 在构造 ClientRequest 时会同步校验 header 值,遇到控制字符/CRLF
+  // 会同步抛 TypeError,根本不走 req.on('error')。网关经隧道送来的东西本质是外部
+  // 输入,agent 常驻在用户机器上被 systemd 拉起,不能因为一条畸形帧就整进程崩溃。
+  const stream = new FakeStream({
+    type: 'http', method: 'GET', path: '/',
+    headers: { 'x-evil': 'line1\r\nline2' },
+  });
+  assert.doesNotThrow(() => handleStream(stream, { localPort: 7080, localToken: '' }));
+  assert.ok(stream.failure, '必须转成 stream.fail() 而不是让异常冒出去');
+});
+
+test('WS 排队上限:本机迟迟不完成握手时直接 fail,不无界攒内存', async (t) => {
+  // 用一个只 accept 连接、永远不回任何字节的裸 TCP server 模拟"端口通但应用层瘫痪,
+  // 迟迟不完成 WS 升级握手"——ws 客户端会一直停在 CONNECTING,open 永远不触发。
+  const sockets = [];
+  const srv = net.createServer((socket) => { sockets.push(socket); });
+  const port = await listen(srv);
+  t.after(() => new Promise((r) => {
+    for (const s of sockets) s.destroy();
+    srv.close(r);
+  }));
+
+  const stream = new FakeStream({ type: 'ws', path: '/ws/stuck' });
+  // 测试用一个很小的上限,不必真攒到生产环境的 1MiB 默认值才能触发
+  handleStream(stream, { localPort: port, localToken: '', maxPendingBytes: 64 });
+
+  const chunk = Buffer.alloc(40, 1);
+  stream.emit('data', packWsMessage(chunk, true));
+  // 超限判定是同步发生的:第二个 emit 里 fail() 会同步触发 '_failed'。必须在这条
+  // emit 之前先订阅,否则 once() 会错过一个已经同步发生过的事件,白等到超时。
+  const failed = stream.waitFor('_failed');
+  stream.emit('data', packWsMessage(chunk, true)); // 累计 80 字节,超过 64 字节上限
+
+  await Promise.race([
+    failed,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('超时:排队超限没有触发 fail')), 2000)),
+  ]);
+  assert.match(stream.failure, /上限|排队/);
 });
