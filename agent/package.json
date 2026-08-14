@@ -1,0 +1,16 @@
+{
+  "name": "cctower-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CCTower agent:出站连接网关,把隧道流量转发到本机 CCTower",
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "ws": "^8.21.1"
+  }
+}
