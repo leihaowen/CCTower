@@ -71,9 +71,11 @@ node gateway/cli.js add-server aws1     # 打印 id 与 token(只显示这一次
 sudo ./agent/install.sh wss://cc.example.com/tunnel <token> 7080
 ```
 
-`agent/install.sh` 会把 `agent/` 与其依赖的 `shared/` 部署到 `/opt/cctower-agent`
-(`shared/` 复制到与之同级的 `/opt/shared`,agent 用相对路径 `require('../shared/tunnel/mux')`
-引用它),生成 `/etc/cctower-agent.json`,并安装、启用 `cctower-agent` systemd 服务。
+`agent/install.sh` 会把 `agent/` 部署到 `/opt/cctower-agent/app`、把其依赖的 `shared/` 复制到
+与之同级的 `/opt/cctower-agent/shared`(agent 用相对路径 `require('../shared/tunnel/mux')`
+引用它;两者都在 `cctower-agent` 专属命名空间下,不会碰到系统上任何既有的通用路径),
+生成 `/etc/cctower-agent.json`,建一个不能登录的系统用户 `cctower-agent` 并把配置文件
+`chown` 给它,再安装、以该用户身份启用 `cctower-agent` systemd 服务(见下面第 8 节)。
 
 ## 5. 本机开了 CCW_TOKEN 怎么办
 
@@ -117,3 +119,11 @@ sudo systemctl restart cctower-agent
   对应隧道最迟在网关下一次心跳扫描时断开(默认约 15 秒内;要立即断开需重启网关进程)。
 - 网关自己的数据目录默认在 `~/.cctower-gateway`(可用 `CCTOWER_GATEWAY_DATA` 覆盖),
   权限固定为 `0700`,存放服务器列表、token 哈希与登录密码哈希。
+- agent 以专属系统用户 `cctower-agent` 运行(`install.sh` 自动创建,非 root、不能登录),
+  单元额外加了 `ProtectSystem=strict`/`ProtectHome=true`/`PrivateTmp=true`:agent 是网关被
+  攻破后唯一能碰到的枢轴点,以最小权限运行能把爆炸半径限制在这个账号能读到的东西
+  (回环网络访问不受用户身份影响,配置文件已 `chown` 给它)。
+- **多台被代理的 CCTower 与网关 UI 共用同一个 origin**(`/s/<id>/` 是路径式代理,不是子域名
+  隔离):任一台机器上的 XSS,或一台被攻陷的机器,理论上都能借用户已登录的会话去调网关自身的
+  `/api/overview`,或调其它机器的 `/s/<other-id>/api/...`。这是一期有意接受的取舍,详见规格
+  `docs/superpowers/specs/2026-08-13-gateway-remote-access-design.md` §7。

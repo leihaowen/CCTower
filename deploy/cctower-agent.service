@@ -5,12 +5,19 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/cctower-agent
-ExecStart=/usr/bin/node /opt/cctower-agent/index.js
+WorkingDirectory=/opt/cctower-agent/app
+ExecStart=/usr/bin/node /opt/cctower-agent/app/index.js
 Environment=CCTOWER_AGENT_CONFIG=/etc/cctower-agent.json
 Restart=always
 RestartSec=3
+# 只需要出站网络、回环访问与读一个 0600 配置文件,不用 root:
+# install.sh 建的专属系统用户,爆炸半径限制在这个账号能碰到的东西
+User=cctower-agent
+Group=cctower-agent
 NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
