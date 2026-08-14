@@ -107,6 +107,13 @@ webhook(默认关闭)。
 
 前置要求、配置方式与手动验收清单见 **[desktop/README.md](desktop/README.md)**。
 
+## 远程访问(多机聚合)
+
+有多台机器都跑着 CCTower,或者有些机器在 NAT 后面没有公网 IP?`gateway/` 提供一个远程访问网关:
+把它们聚合到一个 HTTPS 域名下,agent 主动出站接入,手机浏览器也能直接用,各机 CCTower 全程只听回环。
+
+完整架构、部署步骤与排障见 **[docs/GATEWAY.md](docs/GATEWAY.md)**。
+
 ## 测试
 
 ```bash

@@ -1,0 +1,8 @@
+# 把 cc.example.com 换成你的域名;Caddy 会自动申请与续期证书。
+cc.example.com {
+	encode zstd gzip
+	# WebSocket 与 SSE 需要长连接,别设短的超时
+	reverse_proxy 127.0.0.1:7081 {
+		flush_interval -1
+	}
+}

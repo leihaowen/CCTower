@@ -1,0 +1,16 @@
+[Unit]
+Description=CCTower agent(出站接入远程访问网关)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cctower-agent
+ExecStart=/usr/bin/node /opt/cctower-agent/index.js
+Environment=CCTOWER_AGENT_CONFIG=/etc/cctower-agent.json
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
