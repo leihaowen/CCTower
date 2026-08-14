@@ -60,6 +60,17 @@ test('remove-server:删掉存在的返回 0,不存在的返回 1', async () => {
   c.cleanup();
 });
 
+test('remove-server:输出说明隧道在下一次心跳断开,而非 30 秒', async () => {
+  const c = ctx();
+  const { server } = c.store.addServer('s1');
+  await run(['remove-server', server.id], c);
+  const output = c.text();
+  assert.match(output, /下一次心跳/);
+  assert.match(output, /15\s*秒/); // 期望提到约 15 秒(心跳周期)
+  assert.doesNotMatch(output, /30\s*秒/, '不应该错误地承诺 30 秒');
+  c.cleanup();
+});
+
 test('set-password:写入的是哈希,能被 verifyPassword 验过', async () => {
   const c = ctx();
   const code = await run(['set-password'], { ...c, readPassword: async () => '新密码好长好长密' });

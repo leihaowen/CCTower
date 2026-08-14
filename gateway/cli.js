@@ -45,7 +45,7 @@ async function run(argv, { store = new Store(), out = console.log, readPassword 
       if (!store.removeServer(id)) { out(`没有 id 为 ${id} 的服务器`); return 1; }
       out(`已删除 ${id},它的 token 立即失效`);
       out('');
-      out('注意:该服务器的现有隧道会在网关下次心跳(最长约 30 秒)后自动断开。');
+      out('该服务器的现有隧道会在网关下一次心跳扫描时断开(默认最长约 15 秒)。');
       out('若要立即断开,请重启网关进程。');
       return 0;
     }

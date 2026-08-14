@@ -94,7 +94,21 @@ class Hub extends EventEmitter {
     // 硬性契约:agent 侧判死是 45s,且 agent 自己从不主动发 ping——它完全靠
     // 收到网关的帧来刷新活性。所以这里的心跳周期(默认 15s)必须显著小于
     // 45s,否则一条空闲但健康的隧道会被 agent 误判死并反复重连。
+
+    // 同时:token 吊销意味着 removeServer() 后的隧道不能继续活着。
+    // 活着的 agent 会通过 mux.handleMessage() 自动回 pong 来刷新 lastFrameAt,
+    // 所以无法依靠 deadAfterMs 超时来清理已吊销的服务器。
+    // 因此需要显式检查:如果隧道对应的 server 已从 store 删除,立即 detach。
+    const activeServersSet = new Set(this.store.listServers().map(s => s.id));
+
     for (const t of [...this._tunnels.values()]) {
+      // 首先检查服务器是否已被删除(token 已吊销)
+      if (!activeServersSet.has(t.id)) {
+        // token 已吊销,连接不能继续活着——立即断开
+        this.detach(t.id);
+        continue;
+      }
+
       if (this.now() - t.lastFrameAt > this.deadAfterMs) {
         // TCP 没断但对端已经死了(移动网络切换最常见):主动掐断,让 agent 走重连
         try { t.ws.terminate ? t.ws.terminate() : t.ws.close(); } catch { /* 已关 */ }
