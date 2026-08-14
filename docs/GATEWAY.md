@@ -75,9 +75,25 @@ sudo ./agent/install.sh wss://cc.example.com/tunnel <token> 7080
 与之同级的 `/opt/cctower-agent/shared`(agent 用相对路径 `require('../shared/tunnel/mux')`
 引用它;两者都在 `cctower-agent` 专属命名空间下,不会碰到系统上任何既有的通用路径),
 生成 `/etc/cctower-agent.json`,建一个不能登录的系统用户 `cctower-agent` 并把配置文件
-`chown` 给它,再安装、以该用户身份启用 `cctower-agent` systemd 服务(见下面第 8 节)。
+`chown` 给它,再安装、以该用户身份启用 `cctower-agent` systemd 服务(见下面第 9 节)。
 
-## 5. 本机开了 CCW_TOKEN 怎么办
+## 5. 升级已有 agent
+
+在已经装过 agent 的机器上重跑 `install.sh`(比如拉了新版本代码、要改端口或 token)时,
+脚本会把新代码拷到 `/opt/cctower-agent/app`、刷新 systemd 单元,并**显式重启**
+`cctower-agent` 服务,让新代码真正跑起来(而不是仅仅 `enable`,因为对一个已经在跑的
+单元,`enable`/`start` 都不会重启已存在的进程)。
+
+如果这台机器是从更早、还没有做非 root 加固的版本升级上来的,`$BASE`(即
+`/opt/cctower-agent`)下可能残留旧布局的文件(比如旧版本直接摆在 `$BASE` 根下的
+`index.js`、`src/`、`node_modules/`,而不是现在的 `$BASE/app/...`)。这些残留不影响新版本
+运行,但会白占磁盘、也容易在排障时误看成"当前生效的代码",建议手动确认并清理:
+
+```bash
+ls -la /opt/cctower-agent            # 确认只剩 app/ 与 shared/ 两个目录
+```
+
+## 6. 本机开了 CCW_TOKEN 怎么办
 
 如果这台机器的 CCTower 本身设了 `CCW_TOKEN`(建议对外场景都设),agent 转发请求时也要带上它:
 把同样的值填进 `/etc/cctower-agent.json` 的 `localToken` 字段,然后重启 agent:
@@ -89,12 +105,12 @@ sudo systemctl restart cctower-agent
 > 之后如果要改网关地址、token 或端口而重跑 `install.sh`,不用担心这里填的 `localToken`
 > 被清空——脚本会先读旧配置里的值,原样写回新文件。
 
-## 6. 手机使用
+## 7. 手机使用
 
 浏览器打开网关域名 → 登录(网关密码,`gateway/cli.js set-password` 设置)→ 选服务器进入。
 可以把页面"添加到主屏幕"当作快捷方式用。一期页面是桌面版布局,移动端专门适配放在二期。
 
-## 7. 排障
+## 8. 排障
 
 - **卡片一直显示离线**:去对应服务器上查 agent 状态和日志
   ```bash
@@ -112,7 +128,7 @@ sudo systemctl restart cctower-agent
   cd /opt/cctower && sudo -u cctower node gateway/cli.js set-password
   ```
 
-## 8. 安全须知
+## 9. 安全须知
 
 - 网关是唯一的公网暴露面(Caddy 终止的 443);各机 CCTower 一律只监听回环,不对外开放端口。
 - 删除一台服务器(`node gateway/cli.js remove-server <id>`)会立即吊销它的 token,
