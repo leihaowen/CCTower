@@ -53,7 +53,7 @@ async function run(argv, { store = new Store(), out = console.log, readPassword 
       const pw = String(await readPassword() || '');
       if (pw.length < MIN_PASSWORD) { out(`密码至少 ${MIN_PASSWORD} 个字符`); return 1; }
       store.setConfig({ passwordHash: hashPassword(pw) });
-      out('密码已更新,重启网关后生效');
+      out('密码已更新,立即生效(/api/login 每次都现读配置,无需重启网关;重启反而会踢掉全部隧道)');
       return 0;
     }
     default:

@@ -81,6 +81,17 @@ test('set-password:写入的是哈希,能被 verifyPassword 验过', async () =>
   c.cleanup();
 });
 
+test('终审 M-1:set-password 的提示文案说"立即生效",不能误导去重启网关', async () => {
+  // /api/login 每次都现读 store.getConfig(),新密码立即可用;"重启后生效"是错的,
+  // 而且是有害的错——照做会把全部在线隧道都踢断。
+  const c = ctx();
+  const code = await run(['set-password'], { ...c, readPassword: async () => '新密码好长好长密' });
+  assert.equal(code, 0);
+  assert.match(c.text(), /立即生效/);
+  assert.doesNotMatch(c.text(), /重启网关后生效/);
+  c.cleanup();
+});
+
 test('set-password:太短的密码被拒,不写入', async () => {
   const c = ctx();
   assert.equal(await run(['set-password'], { ...c, readPassword: async () => 'abc' }), 1);

@@ -45,11 +45,6 @@ function createApp({ store, hub, secureCookie = true } = {}) {
     res.json({ ok: true });
   });
 
-  app.post('/api/logout', (_req, res) => {
-    res.setHeader('Set-Cookie', clearCookie({ secure: secureCookie }));
-    res.json({ ok: true });
-  });
-
   app.use((req, res, next) => {
     if (sessionOk(req.headers)) return next();
     if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'unauthorized' });
@@ -57,6 +52,13 @@ function createApp({ store, hub, secureCookie = true } = {}) {
   });
 
   // ---------- 以下均需已登录 ----------
+  // /api/logout 必须放在认证中间件之后:挂在它前面意味着未登录的第三方页面也能
+  // 用一个跨站表单/图片打这个接口,强制把受害者已登录的会话踢下线(强制登出级 CSRF)。
+  app.post('/api/logout', (_req, res) => {
+    res.setHeader('Set-Cookie', clearCookie({ secure: secureCookie }));
+    res.json({ ok: true });
+  });
+
   app.get('/', (_req, res) => res.sendFile('overview.html', { root: PUBLIC_DIR }));
   app.get('/api/overview', (_req, res) => res.json({ servers: hub.overview() }));
   app.use('/s/:id', (req, res) => {

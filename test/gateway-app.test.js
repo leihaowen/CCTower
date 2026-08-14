@@ -148,6 +148,16 @@ test('登出后 cookie 失效', async (t) => {
   assert.match(out.headers.get('set-cookie'), /Max-Age=0/);
 });
 
+test('终审 M-8:未登录调用 /api/logout 必须 401,不能被当成强制登出级 CSRF 利用', async (t) => {
+  // /api/logout 挂在认证中间件之前时,任何第三方页面都能诱导受害者浏览器打这个接口
+  // (跨站 POST,不需要知道 cookie 值,浏览器自动带上),把受害者已登录的会话强制踢下线。
+  const g = await boot();
+  t.after(g.cleanup);
+  const r = await fetch(`${g.base}/api/logout`, { method: 'POST' });
+  assert.equal(r.status, 401, '未登录不能调用 /api/logout');
+  assert.equal(r.headers.get('set-cookie'), null, '未登录不该收到任何 Set-Cookie(包括清除动作)');
+});
+
 test('/s/:id 补尾斜杠;离线服务器代理返回 502', async (t) => {
   const g = await boot();
   t.after(g.cleanup);
