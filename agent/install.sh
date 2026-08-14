@@ -28,14 +28,22 @@ cp -r "$SRC/../shared" "$(dirname "$DEST")/shared"
 ( cd "$DEST" && npm install --omit=dev --no-audit --no-fund )
 
 umask 077
-cat > "$CONFIG" <<EOF
-{
-  "gatewayUrl": "$GATEWAY_URL",
-  "token": "$TOKEN",
-  "localPort": $LOCAL_PORT,
-  "localToken": ""
-}
-EOF
+# 重跑本脚本(比如改端口)不该把运维手动填过的 localToken 静默清空,先读旧值再写回。
+EXISTING_LOCAL_TOKEN=""
+if [ -f "$CONFIG" ]; then
+  EXISTING_LOCAL_TOKEN="$(node -e "
+    try {
+      const c = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
+      process.stdout.write(String(c.localToken || ''));
+    } catch { /* 旧文件读不出来就当没有,不阻塞安装 */ }
+  " "$CONFIG")"
+fi
+node -e "
+  const fs = require('fs');
+  const [gatewayUrl, token, localPort, localToken, file] = process.argv.slice(1);
+  const cfg = { gatewayUrl, token, localPort: Number(localPort), localToken };
+  fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+" "$GATEWAY_URL" "$TOKEN" "$LOCAL_PORT" "$EXISTING_LOCAL_TOKEN" "$CONFIG"
 chmod 600 "$CONFIG"
 
 install -m 644 "$SRC/../deploy/cctower-agent.service" /etc/systemd/system/cctower-agent.service

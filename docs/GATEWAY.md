@@ -28,18 +28,34 @@ CCTower(监听在回环地址,不直接对外暴露)。
 
 在一台有公网 IP、线路好的 VPS 上(国内访问优先选港/日/新加坡节点):
 
+`deploy/cctower-gateway.service` 写死了以系统用户 `cctower` 运行,所以先建这个用户,
+再以它的身份完成初始化——网关的数据目录默认是 `~/.cctower-gateway`(取运行用户的 home),
+密码必须以 **将来跑服务的同一个用户** 设置,否则服务启动时读的是别的 home,会因为
+"没有设置登录密码"直接退出:
+
 ```bash
-git clone <repo> /opt/cctower && cd /opt/cctower && npm ci --omit=dev
-node gateway/cli.js set-password
+# 1. 建系统用户,home 直接指到部署目录(不单独 --create-home,下一步 clone 会创建它)
+sudo useradd --system --home-dir /opt/cctower --shell /usr/sbin/nologin cctower
+
+# 2. 拉代码、装依赖(clone 出来默认是当前用户属主,记得 chown 给 cctower)
+sudo git clone <repo> /opt/cctower
+cd /opt/cctower && sudo npm ci --omit=dev
+sudo chown -R cctower:cctower /opt/cctower
+
+# 3. 以 cctower 身份设密码——这样 ~/.cctower-gateway 才会建在 /opt/cctower/.cctower-gateway
+#    (由网关进程自己按 0700 创建,不用手建目录)
+sudo -u cctower node gateway/cli.js set-password
+
+# 4. 装 systemd 单元并启动
 sudo cp deploy/cctower-gateway.service /etc/systemd/system/
 sudo systemctl enable --now cctower-gateway
 # 配好 Caddyfile 后
 sudo systemctl reload caddy
 ```
 
-`deploy/cctower-gateway.service` 默认以 `cctower` 用户运行、只监听 `127.0.0.1:7081`;
-公网入口与 TLS 由前面的 Caddy 负责,配置示例见 [`deploy/Caddyfile.example`](../deploy/Caddyfile.example)
-(把里面的域名换成你自己的,Caddy 会自动申请并续期证书)。
+网关只监听 `127.0.0.1:7081`;公网入口与 TLS 由前面的 Caddy 负责,配置示例见
+[`deploy/Caddyfile.example`](../deploy/Caddyfile.example)(把里面的域名换成你自己的,
+Caddy 会自动申请并续期证书)。
 
 ## 4. 添加一台服务器
 
@@ -68,6 +84,9 @@ sudo ./agent/install.sh wss://cc.example.com/tunnel <token> 7080
 sudo systemctl restart cctower-agent
 ```
 
+> 之后如果要改网关地址、token 或端口而重跑 `install.sh`,不用担心这里填的 `localToken`
+> 被清空——脚本会先读旧配置里的值,原样写回新文件。
+
 ## 6. 手机使用
 
 浏览器打开网关域名 → 登录(网关密码,`gateway/cli.js set-password` 设置)→ 选服务器进入。
@@ -86,9 +105,9 @@ sudo systemctl restart cctower-agent
   ```
 - **登录后立刻被登出**:多半是用 `http` 而不是 `https` 访问网关——Secure cookie 在明文
   连接下存不住,线上必须走 HTTPS(Caddy 已经自动处理证书,直接用它前面的域名访问)。
-- **忘了网关密码**:在网关机器上重设
+- **忘了网关密码**:在网关机器上,以运行服务的同一个用户重设(否则改到别的 home 下,服务还是读不到)
   ```bash
-  node gateway/cli.js set-password
+  cd /opt/cctower && sudo -u cctower node gateway/cli.js set-password
   ```
 
 ## 8. 安全须知
