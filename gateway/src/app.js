@@ -12,8 +12,10 @@ const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 function createApp({ store, hub, secureCookie = true } = {}) {
   const app = express();
-  // Caddy 在前面,限速要按真实客户端 IP 而不是 127.0.0.1
-  app.set('trust proxy', true);
+  // 只信任离网关最近的这一跳(Caddy),不能用 true:true 表示信任整条 X-Forwarded-For
+  // 链条,攻击者会在自己发出的请求里伪造这个头、每次换一个假 IP,导致 req.ip 每次
+  // 都不同,登录限速(按 IP 计数)直接被绕过——这是暴力破解密码的唯一防线。
+  app.set('trust proxy', 1);
   const secret = store.ensureSecret();
   const limiter = new RateLimiter({ limit: 5, windowMs: 60_000 });
 
@@ -25,6 +27,9 @@ function createApp({ store, hub, secureCookie = true } = {}) {
   // 用 {root} 形式而不是拼好的绝对路径:send 模块的 dotfile 检查会扫描整条路径的
   // 每一段,项目若被放在带点号的目录下(如 .claude/…)拼绝对路径会被误判成点文件而 404
   app.get('/login', (_req, res) => res.sendFile('login.html', { root: PUBLIC_DIR }));
+  // 登录页自己要用这份样式表,必须在认证中间件之前放行;但只精确放行这一个文件,
+  // 不能把整个 static 中间件搬到认证前面——总览页的 overview.js 等资源仍必须登录后才能拿到
+  app.get('/gateway.css', (_req, res) => res.sendFile('gateway.css', { root: PUBLIC_DIR }));
 
   // express.json() 只挂这一条路由:全局挂载会吞掉待代理请求的请求体
   app.post('/api/login', express.json({ limit: '4kb' }), (req, res) => {

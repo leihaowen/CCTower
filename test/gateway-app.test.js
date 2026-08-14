@@ -94,6 +94,43 @@ test('登录限速:同一 IP 连续失败第 6 次直接 429', async (t) => {
   assert.equal(r.status, 429);
 });
 
+test('登录限速:伪造 X-Forwarded-For 前缀改变不了限速计数(只信任最近一跳)', async (t) => {
+  const g = await boot();
+  t.after(g.cleanup);
+  // 真实拓扑里 Caddy 是唯一直连网关的一跳:它会把自己观测到的客户端地址追加到
+  // X-Forwarded-For 末尾,攻击者能操纵的只是自己那次请求里已经带的前缀部分。
+  // 这里用 "<每次变化的伪造前缀>, 203.0.113.9" 模拟——末位固定,代表 Caddy 追加的
+  // 真实来源;trust proxy=1 只信任最近这一跳(即末位),前缀怎么变都不影响限速 key。
+  // 注意:若伪造值只有单独一段且没有真实的第二跳(reviewer 描述的字面场景),
+  // trust=1 与 trust=true 在这种直连测试里表现完全一样(都会直接采信这唯一一段)——
+  // 这不是漏洞,是 X-Forwarded-For 单跳时无法计算,真正体现"只信任最近一跳"这条修复
+  // 的场景必须要有至少两段,让"最近一跳"与"攻击者可控前缀"能区分开。
+  for (let i = 0; i < 5; i++) {
+    await fetch(`${g.base}/api/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': `9.9.9.${i}, 203.0.113.9` },
+      body: JSON.stringify({ password: '错的' }),
+    });
+  }
+  const r = await fetch(`${g.base}/api/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': '9.9.9.99, 203.0.113.9' },
+    body: JSON.stringify({ password: '错的' }),
+  });
+  assert.equal(r.status, 429, '伪造头不能重置限速计数');
+});
+
+test('未登录也能取到登录页的样式表,但取不到总览页的脚本', async (t) => {
+  const g = await boot();
+  t.after(g.cleanup);
+  // redirect: 'manual' 是关键:默认 'follow' 会把 302 悄悄带到 /login 再拿到 200,
+  // 从而把"其实被拦截了"误判成"能直接拿到"——必须看未跟随重定向前的原始状态码
+  const css = await fetch(`${g.base}/gateway.css`, { redirect: 'manual' });
+  assert.equal(css.status, 200);
+  const js = await fetch(`${g.base}/overview.js`, { redirect: 'manual' });
+  assert.equal(js.status, 302, '总览页脚本仍需登录后才能拿到,放行范围不能扩大');
+});
+
 test('伪造 cookie 不被接受', async (t) => {
   const g = await boot();
   t.after(g.cleanup);
