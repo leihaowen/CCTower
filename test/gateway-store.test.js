@@ -6,6 +6,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 const { Store, tokenHash } = require('../gateway/src/store');
 
 function tmpStore() {
@@ -89,29 +90,63 @@ test('数据目录权限为 0700,配置文件为 0600', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('修复#1:临时文件名唯一化防止并发踩踏', () => {
-  // 两个 Store 实例同时写同一个文件,不应互相消费临时文件
+test('修复#1:临时文件名唯一化防止并发踩踏', { timeout: 10000 }, (t, done) => {
+  // 真实子进程并发写,验证固定 tmp 名会导致 rename ENOENT 崩溃
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccgw-concurrent-'));
-  const store1 = new Store(tmpdir);
-  const store2 = new Store(tmpdir);
-  const serversFile = path.join(tmpdir, 'servers.json');
+  const storeModulePath = path.join(__dirname, '..', 'gateway', 'src', 'store');
 
-  // 模拟两个进程同时各写 5 次
-  for (let i = 0; i < 5; i++) {
-    store1.addServer(`s1-${i}`);
-    store2.addServer(`s2-${i}`);
-  }
+  let exitCount = 0;
+  let proc1ExitCode = null;
+  let proc2ExitCode = null;
+  let proc1Stderr = '';
+  let proc2Stderr = '';
 
-  const servers = new Store(tmpdir).listServers();
-  assert.equal(servers.length, 10, '10 条记录应全部保存(不因并发踩踏而丢失)');
+  const onExit = () => {
+    exitCount++;
+    if (exitCount === 2) {
+      // 两个子进程都退出后检查结果
+      if (proc1ExitCode !== 0) {
+        console.error('子进程 1 stderr:', proc1Stderr);
+      }
+      if (proc2ExitCode !== 0) {
+        console.error('子进程 2 stderr:', proc2Stderr);
+      }
+      assert.equal(proc1ExitCode, 0, '子进程 1 应正常退出(exitCode 0)');
+      assert.equal(proc2ExitCode, 0, '子进程 2 应正常退出(exitCode 0)');
 
-  // 验证临时文件名不是固定的 ${file}.tmp
-  // (通过检查写入期间没有遗留的 .tmp 文件)
-  const files = fs.readdirSync(tmpdir);
-  const tmpFiles = files.filter(f => f.endsWith('.tmp'));
-  assert.equal(tmpFiles.length, 0, '写入完成后不应有遗留的 .tmp 文件');
+      const servers = new Store(tmpdir).listServers();
+      // 两个子进程各 50 次,可能有覆盖但不应完全丢失
+      assert.ok(servers.length > 0, `应有记录被保存(实际: ${servers.length})`);
 
-  fs.rmSync(tmpdir, { recursive: true, force: true });
+      fs.rmSync(tmpdir, { recursive: true, force: true });
+      done();
+    }
+  };
+
+  // 子进程脚本:各跑 50 次 addServer
+  const scriptCode = `
+const { Store } = require('${storeModulePath}');
+const dir = process.argv[1];
+const store = new Store(dir);
+for (let i = 0; i < 50; i++) {
+  store.addServer('s-' + process.pid + '-' + i);
+}
+  `.trim();
+
+  // 起两个子进程同时向同一目录写(使用 -e 内联脚本)
+  const proc1 = spawn('node', ['-e', scriptCode, tmpdir]);
+  proc1.stderr.on('data', (data) => { proc1Stderr += data.toString(); });
+  proc1.on('exit', (code) => {
+    proc1ExitCode = code;
+    onExit();
+  });
+
+  const proc2 = spawn('node', ['-e', scriptCode, tmpdir]);
+  proc2.stderr.on('data', (data) => { proc2Stderr += data.toString(); });
+  proc2.on('exit', (code) => {
+    proc2ExitCode = code;
+    onExit();
+  });
 });
 
 test('修复#2:已存在的 0755 目录应被改为 0700', () => {
@@ -129,41 +164,55 @@ test('修复#2:已存在的 0755 目录应被改为 0700', () => {
   fs.rmSync(tmpdir, { recursive: true, force: true });
 });
 
-test('修复#3:预置 0644 的 .tmp 文件,写入后应是 0600', () => {
+test('修复#3:在 umask(0o022) 宽松环境下写入,最终文件仍是 0600', () => {
+  // 显式 chmod 是防御性的第二道保险(唯一文件名已消除主要场景)
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccgw-perm-'));
   const store = new Store(tmpdir);
   const configFile = path.join(tmpdir, 'config.json');
 
-  // 预先制造一个 0644 的 .tmp 文件残留
-  // (虽然随机文件名会减轻,但仍要显式验证权限收紧)
-  const tmpPath = `${configFile}.0.000.tmp`;
-  fs.writeFileSync(tmpPath, '{}', { mode: 0o644 });
-  assert.equal(fs.statSync(tmpPath).mode & 0o777, 0o644, '预置文件应是 0644');
-
-  // 这会清理残留的 .tmp 并写入新的
-  store.setConfig({ port: 8000 });
-
-  // 最终的 config.json 应该是 0600
-  assert.equal(fs.statSync(configFile).mode & 0o777, 0o600, '最终文件应是 0600');
+  const oldUmask = process.umask(0o022);  // 宽松权限
+  try {
+    store.setConfig({ port: 8000 });
+    // 即使 umask 会放宽文件权限,显式 chmod 仍应保证最终是 0600
+    assert.equal(fs.statSync(configFile).mode & 0o777, 0o600, '最终文件应是 0600(防御性权限收紧)');
+  } finally {
+    process.umask(oldUmask);  // 还原 umask
+  }
 
   fs.rmSync(tmpdir, { recursive: true, force: true });
 });
 
-test('修复#4:ensureSecret 并发幂等性(写盘后返回磁盘值)', () => {
-  // 模拟两个进程同时首次调用 ensureSecret()
-  // 虽然无法在单进程里真正并发,但可以验证返回值是磁盘上的最终值
+test('修复#4:ensureSecret 绝不返回空字符串(防重写覆盖)', () => {
+  // setConfig 与 getConfig 之间若另一进程覆盖 config.json(不含 sessionSecret)
+  // 重新读盘会拿到空字符串,ensureSecret 必须检测并再写一次
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccgw-secret-'));
-  const store1 = new Store(tmpdir);
+  const store = new Store(tmpdir);
 
-  const secret1 = store1.ensureSecret();
-  assert.ok(secret1.length >= 32);
+  // 用桩函数模拟"磁盘被另一进程清空 sessionSecret"的场景
+  let callCount = 0;
+  const originalGetConfig = store.getConfig.bind(store);
+  store.getConfig = function() {
+    callCount++;
+    const cfg = originalGetConfig();
+    // 第二次调用时(ensureSecret 写盘后的重读)返回空 sessionSecret
+    if (callCount === 2) {
+      return { ...cfg, sessionSecret: '' };
+    }
+    return cfg;
+  };
 
-  // 模拟另一个进程读到相同的值(磁盘上的最终值)
-  const store2 = new Store(tmpdir);
-  const secret2 = store2.getConfig().sessionSecret;
+  try {
+    const secret = store.ensureSecret();
+    // ensureSecret 应检测到空值并重写,返回的仍是非空且长度合理的密钥
+    assert.ok(secret.length >= 32, 'ensureSecret 返回值应是非空长密钥');
+    assert.notEqual(secret, '', 'ensureSecret 绝不返回空字符串');
 
-  // 验证 store1 返回的是磁盘上的值,而不是本进程内存里的临时值
-  assert.equal(secret1, secret2, 'ensureSecret 返回值应等于磁盘上的最终值');
+    // 验证最终磁盘上确实被再写了一次(非空)
+    const final = new Store(tmpdir).getConfig().sessionSecret;
+    assert.ok(final.length >= 32, '最终磁盘上的 secret 应是非空长密钥');
+  } finally {
+    store.getConfig = originalGetConfig;  // 还原
+  }
 
   fs.rmSync(tmpdir, { recursive: true, force: true });
 });

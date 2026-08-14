@@ -108,13 +108,19 @@ class Store {
 
   // 会话密钥必须跨重启稳定,否则网关一重启所有人都被登出
   // 并发首次调用时各进程生成各自的 secret,但要返回磁盘上的最终值(幂等)
+  // setConfig 与随后的 getConfig 之间若另一进程覆盖 config.json,
+  // 重新读盘可能拿到空 sessionSecret,此时必须再写一次保证非空
   ensureSecret() {
     const cfg = this.getConfig();
     if (cfg.sessionSecret) return cfg.sessionSecret;
     const secret = crypto.randomBytes(32).toString('base64');
     this.setConfig({ sessionSecret: secret });
     // 写盘后重新读一次,返回磁盘上的最终值(在并发下可能被其他进程覆盖了)
-    return this.getConfig().sessionSecret;
+    const reread = this.getConfig().sessionSecret;
+    if (reread) return reread;
+    // 若磁盘上的值为空(被其他进程覆盖了),再写一次自己的 secret
+    this.setConfig({ sessionSecret: secret });
+    return secret;
   }
 }
 
