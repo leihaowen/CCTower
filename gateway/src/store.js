@@ -60,12 +60,17 @@ class Store {
     try {
       const content = fs.readFileSync(this.serversFile, 'utf8');
       const v = JSON.parse(content);
-      if (!Array.isArray(v)) return [];
+      // 合法 JSON 但不是数组(比如 {}、null、{"servers":[]})跟语法损坏一样危险:
+      // 静默当成 [] 会被 sweep 解读成"注册表里一个服务器都没有",从而把所有在线
+      // 隧道当作已吊销逐个断开。必须抛错,复用下面已有的"读取失败就跳过本轮吊销
+      // 检查"保护逻辑,而不是悄悄返回空数组。
+      if (!Array.isArray(v)) throw new Error('servers.json 不是数组');
       return v;
     } catch (e) {
       // ENOENT = 文件不存在,这是合法的初始状态
       if (e.code === 'ENOENT') return [];
-      // 其他错误(如 JSON 解析失败)表示文件存在但损坏,必须向上报告
+      // 其他错误(JSON 解析失败,或上面主动抛出的"不是数组")表示文件存在但内容
+      // 不可信,必须向上报告
       throw e;
     }
   }

@@ -157,7 +157,13 @@ class Hub extends EventEmitter {
       tunnel.retryTimer = setTimeout(() => this._subscribeEvents(tunnel), 5000);
       if (tunnel.retryTimer.unref) tunnel.retryTimer.unref();
     };
-    stream.on('end', retry);
+    // 'end' 只代表对端(agent 那侧的本机 /ws/events 连接)结束了它那一半;
+    // mux 的 _collect 要求 localEnded && remoteEnded 都为真才回收流,而这里从不
+    // 调用 stream.end() 的话,localEnded 永远是 false——流会永久残留在两侧 mux
+    // 的 _streams 表里(agent 那侧同理:它要收到我们回发的 'end' 控制帧,_collect
+    // 才能凑齐两个条件)。补一次 stream.end() 既标记本地结束,也把 'end' 帧发回去,
+    // 一次调用同时让网关与 agent 两侧都能正常回收。
+    stream.on('end', () => { stream.end(); retry(); });
     stream.on('aborted', retry);
   }
 }

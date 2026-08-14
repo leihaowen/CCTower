@@ -73,6 +73,28 @@ test('ensureSecret:首次生成并落盘,再次调用返回同一个', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('终审 I-2:listServersStrict 对合法 JSON 但非数组的内容必须抛错,不能静默当成 []', () => {
+  const { store, dir } = tmpStore();
+  for (const bad of ['{}', 'null', '{"servers":[]}']) {
+    fs.writeFileSync(path.join(dir, 'servers.json'), bad);
+    assert.throws(() => store.listServersStrict(), `servers.json=${bad} 应该被当成损坏抛错`);
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('listServersStrict:文件不存在时合法,返回空数组(不能被上面那条误伤)', () => {
+  const { store, dir } = tmpStore();
+  assert.deepEqual(store.listServersStrict(), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('listServersStrict:语法损坏的 JSON 依旧抛错(Task 12 的既有行为不能被这次修复破坏)', () => {
+  const { store, dir } = tmpStore();
+  fs.writeFileSync(path.join(dir, 'servers.json'), '{ 语法坏了');
+  assert.throws(() => store.listServersStrict());
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('坏掉的 servers.json 不让网关起不来,按空列表处理', () => {
   const { store, dir } = tmpStore();
   fs.writeFileSync(path.join(dir, 'servers.json'), '{坏文件');

@@ -292,6 +292,59 @@ test('servers.json 损坏时 sweep 不断开在线隧道', async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// ========== 终审 I-1:事件订阅流的正常结束路径不能永久残留 ==========
+
+test('事件订阅反复"接上又断开"不泄漏流:两侧 mux 都要回收', async () => {
+  const f = fixture();
+  const [gwSide, agentSide] = fakePair();
+  const agentMux = new Mux({ send: (p, bin) => agentSide.send(p, { binary: bin }) });
+  agentSide.on('message', (d, bin) => agentMux.handleMessage(d, bin));
+  // 模拟假 CCTower:/ws/events 一接上就正常关闭(remote 侧走 end,而不是 fail)——
+  // 这正是终审报告里"接上又断开"的那条泄漏路径,不同于本机端口没人监听的 fail() 路径。
+  agentMux.on('stream', (s) => {
+    if (s.meta.path !== '/ws/events') return;
+    s.headers({ open: true });
+    s.end();
+  });
+
+  f.hub.attach(f.server, gwSide);
+  await tick(30);
+
+  const tunnel = f.hub._tunnels.get(f.server.id);
+  assert.ok(tunnel, '隧道应已建立');
+  // 直接反复调用 _subscribeEvents 模拟"重订阅→接上→断开"循环多次,不必真等 5 秒重试定时器
+  for (let i = 0; i < 8; i++) {
+    f.hub._subscribeEvents(tunnel);
+    await tick(20);
+  }
+
+  assert.equal(tunnel.mux.streamCount(), 0, '网关侧 mux 不应残留已正常结束的订阅流');
+  assert.equal(agentMux.streamCount(), 0, 'agent 侧 mux 也不应残留(收到网关回发的 end 帧才能回收)');
+  f.cleanup();
+});
+
+test('终审 I-2:servers.json 是合法 JSON 但非数组({}/null/{"servers":[]})时 sweep 不吊销在线隧道', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccgw-hub-nonarray-'));
+  const store = new Store(dir);
+  const { server } = store.addServer('s');
+
+  const hub = new Hub({ store, autoSweep: false });
+  const [gwSide] = fakePair();
+  hub.attach(server, gwSide);
+  assert.equal(hub.isOnline(server.id), true);
+
+  // 这三种都是"语法上合法的 JSON,但不是数组"——Task 12 的修复只堵住了语法损坏那一半,
+  // 这三种会被 listServersStrict 静默当成 [],sweep 据此认为"注册表空了",逐个吊销在线隧道。
+  for (const bad of ['{}', 'null', '{"servers":[]}']) {
+    fs.writeFileSync(path.join(dir, 'servers.json'), bad);
+    hub.sweep();
+    assert.equal(hub.isOnline(server.id), true, `servers.json=${bad} 不该被当成"全部吊销"`);
+  }
+
+  hub.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('删除最后一个服务器后 sweep 仍然正确断开它的隧道', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccgw-hub-last-'));
   const store = new Store(dir);
