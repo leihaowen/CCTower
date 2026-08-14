@@ -38,7 +38,8 @@ class Store {
     const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     try {
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
-      // 临时文件预置 0644 时会被最终文件继承,写完后显式收紧权限
+      // 显式 chmod 是防御性的第二道保险,唯一文件名已消除了"临时文件预置 0644 被继承"
+      // 这个主要场景,当前该分支不可达但保留以防架构变化
       fs.chmodSync(tmp, 0o600);
       fs.renameSync(tmp, file);
     } catch (e) {
