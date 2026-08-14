@@ -49,6 +49,19 @@ test('数据帧:空负载合法,不足 4 字节报错', () => {
   assert.throws(() => decodeData(Buffer.from([1, 2])), /不足 4 字节/);
 });
 
+test('数据帧:负载类型必须严格,数字与对象都报错', () => {
+  // 拒绝数字,避免 Buffer.from(5) 静默分配 5 字节垃圾内存
+  assert.throws(() => encodeData(1, 5), /负载类型/);
+  assert.throws(() => encodeData(1, 123), /负载类型/);
+  // 拒绝对象
+  assert.throws(() => encodeData(1, { data: 'x' }), /负载类型/);
+  // 但字符串与 null 仍然正常
+  const { payload: s } = decodeData(encodeData(2, 'hello'));
+  assert.equal(s.toString('utf8'), 'hello');
+  const { payload: n } = decodeData(encodeData(3, null));
+  assert.equal(n.length, 0);
+});
+
 test('WS 消息打包保留 text/binary 语义', () => {
   const t = unpackWsMessage(packWsMessage(Buffer.from('你好'), false));
   assert.equal(t.isBinary, false);

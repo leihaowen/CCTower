@@ -29,7 +29,18 @@ function encodeData(streamId, payload) {
   if (!Number.isInteger(streamId) || streamId < 0 || streamId > 4294967295) {
     throw new Error('streamId 必须是 0–4294967295 的整数');
   }
-  const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || []);
+  // 负载类型必须明确:Buffer、string 或 null/undefined(视为空负载)
+  // 拒绝数字、对象等容易导致隐式转换的类型,保证编解码的可靠性
+  let body;
+  if (Buffer.isBuffer(payload)) {
+    body = payload;
+  } else if (typeof payload === 'string') {
+    body = Buffer.from(payload, 'utf8');
+  } else if (payload === null || payload === undefined) {
+    body = Buffer.alloc(0);
+  } else {
+    throw new Error(`负载类型必须是 Buffer、string、null 或 undefined,收到 ${typeof payload}`);
+  }
   const head = Buffer.allocUnsafe(4);
   head.writeUInt32BE(streamId, 0);
   return Buffer.concat([head, body]);
