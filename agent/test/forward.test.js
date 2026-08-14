@@ -96,6 +96,46 @@ test('HTTP 转发:请求到达本机,响应状态/头/体原样回传', async (t
   assert.equal(stream.body(), '{"ok":true}');
 });
 
+// 终审 I-4:两层头部净化各自只有纯函数直测(上面那条测的是 localHeaders() 本身),
+// 从未验证 handleHttp() 这个真实调用点真的在用它——把 handleHttp 里的
+// `headers: localHeaders(meta.headers, opts)` 悄悄改回 `headers: meta.headers`,
+// 之前 agent 套件 23 个用例照样全绿。这里直接喂恶意 meta.headers 给 handleStream()
+// 这个真实调用路径(而不是绕过去直调 localHeaders()),用真实本机 HTTP 服务器
+// 观察最终落地的头,才能钉住"调用方真的在用它"这件事。
+test('HTTP 转发调用点(I-4 agent 侧):cookie/origin/伪造 x-ccw-token 不会落进本机请求', async (t) => {
+  let seen = null;
+  const srv = http.createServer((req, res) => {
+    seen = req.headers;
+    res.writeHead(200);
+    res.end('ok');
+  });
+  const port = await listen(srv);
+  t.after(() => new Promise((r) => { srv.closeAllConnections(); srv.close(r); }));
+
+  const stream = new FakeStream({
+    type: 'http', method: 'GET', path: '/',
+    headers: {
+      cookie: 'ccgw_session=real-session', origin: 'http://evil.example',
+      referer: 'http://evil.example/', 'x-ccw-token': 'ATTACKER-SUPPLIED',
+      'x-business': 'keep-me',
+    },
+  });
+  // HTTP 头值必须是 ByteString(ASCII/Latin1),中文字符会让 http.request() 同步抛
+  // ERR_INVALID_CHAR——本机令牌只能用 ASCII 表达(参考 test/gateway-app.test.js 里
+  // 同样的注意事项)
+  const LOCAL_TOKEN = 'agent-local-token-xyz';
+  handleStream(stream, { localPort: port, localToken: LOCAL_TOKEN });
+  stream.emit('end');
+  await stream.waitFor('_ended');
+
+  assert.ok(seen, '请求应该已经到达本机服务');
+  assert.equal(seen.cookie, undefined, 'handleHttp 必须真的调用 localHeaders,而不是透传原始 headers');
+  assert.equal(seen.origin, undefined);
+  assert.equal(seen.referer, undefined);
+  assert.equal(seen['x-ccw-token'], LOCAL_TOKEN, '必须是 agent 自己注入的本机令牌,不能透传浏览器伪造值');
+  assert.equal(seen['x-business'], 'keep-me', '业务头应该保留');
+});
+
 test('HTTP 转发:本机端口没人监听时 fail 出错,而不是静默挂起', async () => {
   const stream = new FakeStream({ type: 'http', method: 'GET', path: '/', headers: {} });
   handleStream(stream, { localPort: 1, localToken: '' }); // 1 端口必然连不上
