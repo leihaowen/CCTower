@@ -139,6 +139,81 @@ test('端到端:登录 → 总览 → 代理 API → WS → 掉线 → 自愈', 
   assert.equal(back.status, 200);
 });
 
+// 终审 I-4:验证整条真实链路(浏览器 → 网关 → 隧道 → agent → 本机服务)组合起来确实
+// 安全——网关会话 cookie 与浏览器伪造的 x-ccw-token 都到不了本机服务,agent 自己配置的
+// 本机令牌原样送达。这条测试和上面 gateway-proxy.test.js / agent/test/forward.test.js
+// 里各自的调用点测试是互补关系,不是重复:那两条分别钉住"网关真调用了净化函数"与
+// "agent 真调用了净化函数"这两个独立的调用点(单独破坏任一层,靠另一层兜底,链路末端
+// 观察不到差异——这正是纵深防御的设计意图,也是为什么此处的端到端断言无法单独定位
+// 是哪一层出的问题);这条测的是两层协同工作的最终效果,同时也是对"整条转发链路真的
+// 接上了"的一次真实回归。
+test('头部净化端到端:浏览器 cookie 与伪造的 x-ccw-token 都到不了本机服务(I-4)', async (t) => {
+  const gwDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccgw-hdr-e2e-'));
+  // HTTP 头值必须是 ByteString(ASCII/Latin1),中文字符会让 http.request() 在
+  // 构造请求时同步抛 ERR_INVALID_CHAR——本机令牌只能用 ASCII 表达
+  const LOCAL_TOKEN = 'agent-local-token-abc123';
+
+  // 假本机 CCTower:只记录实际收到的请求头
+  let seenHeaders = null;
+  const localSrv = http.createServer((req, res) => {
+    seenHeaders = req.headers;
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('ok');
+  });
+  await new Promise((r) => localSrv.listen(0, '127.0.0.1', r));
+  const localPort = localSrv.address().port;
+
+  const store = new Store(gwDir);
+  store.setConfig({ passwordHash: hashPassword(PASSWORD) });
+  const { server: reg, token } = store.addServer('hdr-e2e');
+  const hub = new Hub({ store, autoSweep: false });
+  const { app, handleUpgrade } = createApp({ store, hub, secureCookie: false });
+  const gwServer = http.createServer(app);
+  gwServer.on('upgrade', handleUpgrade);
+  await new Promise((r) => gwServer.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${gwServer.address().port}`;
+
+  const agent = createAgent(
+    { gatewayUrl: `${base.replace('http://', 'ws://')}/tunnel`, token, localPort, localToken: LOCAL_TOKEN },
+    { log: () => {}, backoff: { base: 100, cap: 300 } },
+  );
+  t.after(async () => {
+    agent.stop();
+    hub.close();
+    gwServer.close();
+    await new Promise((r) => localSrv.close(r));
+    fs.rmSync(gwDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+
+  agent.start();
+  await waitUntil(() => hub.isOnline(reg.id), 15000, 'agent 上线');
+
+  const loginRes = await fetch(`${base}/api/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ password: PASSWORD }),
+  });
+  assert.equal(loginRes.status, 200);
+  const cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
+
+  const r = await fetch(`${base}/s/${reg.id}/anything`, {
+    headers: {
+      cookie,
+      origin: base,
+      referer: `${base}/`,
+      'x-ccw-token': 'ATTACKER-SUPPLIED',
+      'x-business-header': 'keep-me',
+    },
+  });
+  assert.equal(r.status, 200);
+  assert.ok(seenHeaders, '请求必须真的送达本机服务');
+  assert.equal(seenHeaders.cookie, undefined, '网关会话 cookie 不能落进本机服务');
+  assert.notEqual(seenHeaders['x-ccw-token'], 'ATTACKER-SUPPLIED', 'x-ccw-token 不能是浏览器伪造值');
+  assert.equal(seenHeaders['x-ccw-token'], LOCAL_TOKEN, '必须是 agent 自己注入的本机令牌');
+  assert.equal(seenHeaders.origin, undefined);
+  assert.equal(seenHeaders.referer, undefined);
+  assert.equal(seenHeaders['x-business-header'], 'keep-me', '业务头应该保留');
+});
+
 test('安全回归:未登录拿不到任何被代理的内容', async (t) => {
   const gwDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccgw-sec-'));
   const store = new Store(gwDir);
