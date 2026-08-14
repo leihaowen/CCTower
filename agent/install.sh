@@ -34,11 +34,22 @@ rm -rf "$SHARED"
 cp -r "$SRC/../shared" "$SHARED"
 ( cd "$DEST" && npm ci --omit=dev --no-audit --no-fund )
 
+# 复审 R-3:上面的 cp/npm ci 沿用的是调用者(sudo)shell 继承下来的 umask,而不是
+# 下面才设置的 umask 077——在 umask 027/077 的加固主机(CIS 基线常见)上,拷出来的
+# 文件会是 640/600、目录 750/700。这一步显式修正:整个 $BASE 一律加"所有人可读,
+# 目录/已有可执行位的文件可执行",让接下来以非 root 的 $AGENT_USER 身份运行的进程
+# 能读到自己的代码(a+rX 的 X 只给目录无条件加可执行位,不会把普通源码文件误标成
+# 可执行)。注意这里只动代码目录 $BASE,绝不能动下面 0600 的 $CONFIG。
+chmod -R a+rX "$BASE"
+
 # 专用系统用户:agent 只需要出站网络、回环访问与读一个 0600 配置文件,不该以 root
 # 身份常驻——它是 systemd Restart=always 拉起的进程,又是网关被攻破后能碰到的
 # 唯一枢轴点,root 身份会把爆炸半径从"这台机器的普通账号"扩大到整机。
 if ! id -u "$AGENT_USER" >/dev/null 2>&1; then
-  useradd --system --no-create-home --shell /usr/sbin/nologin "$AGENT_USER"
+  # --user-group 显式建同名专属组并让该用户加入,不依赖 /etc/login.defs 里
+  # USERGROUPS_ENAB(Debian/RHEL 默认 yes,但不是所有发行版/自定义策略都如此)——
+  # 少了它,单元文件里的 Group=cctower-agent 在极端情况下可能压根不存在。
+  useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$AGENT_USER"
 fi
 
 umask 077
@@ -65,6 +76,12 @@ chown "$AGENT_USER:$AGENT_USER" "$CONFIG"
 
 install -m 644 "$SRC/../deploy/cctower-agent.service" /etc/systemd/system/cctower-agent.service
 systemctl daemon-reload
-systemctl enable --now cctower-agent
+# 复审 R-2:`enable --now` 里的 --now 等价于对已 active 的单元调用 start,而 start
+# 对已在跑的单元是 no-op——不会重启。老部署重跑本脚本升级后,新代码、新的
+# User=cctower-agent 单元都已落地,但跑着的进程仍是旧代码、仍是 root,升级
+# 悄无声息地没生效。enable 只管开机自启,真正让新版本生效必须显式 restart
+# (对尚未跑过的全新安装,restart 等价于 start,不受影响)。
+systemctl enable cctower-agent
+systemctl restart cctower-agent
 echo "装好了。看状态:systemctl status cctower-agent"
 echo "如果本机 CCTower 设了 CCW_TOKEN,把同样的值填进 $CONFIG 的 localToken 后重启服务。"
