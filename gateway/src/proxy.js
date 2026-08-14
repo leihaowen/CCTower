@@ -1,5 +1,6 @@
 'use strict';
 const { packWsMessage, unpackWsMessage } = require('../../shared/tunnel/frames');
+const { SESSION_COOKIE } = require('./auth');
 
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -43,12 +44,38 @@ function proxyHttp(hub, serverId, req, res, targetPath) {
 
   let headersSent = false;
   stream.on('headers', (meta) => {
-    headersSent = true;
     const headers = {};
     for (const [k, v] of Object.entries((meta && meta.headers) || {})) {
-      if (!HOP_BY_HOP.has(String(k).toLowerCase())) headers[k] = v;
+      const key = String(k).toLowerCase();
+      if (HOP_BY_HOP.has(key)) continue;
+      if (key === 'set-cookie') {
+        // 被代理的机器与网关共用同一个 origin(见规格 §7 的"origin 隔离"取舍),
+        // 一台被攻陷的机器可以在响应里夹带一个与网关会话同名的 Set-Cookie,
+        // 覆盖用户当前的登录会话(伪造成攻击者已知的值,持续把人踢下线或劫持登录态)。
+        // 网关自己的会话 cookie 只能由网关自己签发,这里把同名的 cookie 过滤掉,
+        // 其余业务 cookie 原样保留。
+        const arr = (Array.isArray(v) ? v : [v]).filter(
+          (c) => !String(c).startsWith(`${SESSION_COOKIE}=`),
+        );
+        if (arr.length) headers[k] = arr;
+        continue;
+      }
+      headers[k] = v;
     }
-    res.writeHead((meta && meta.status) || 200, headers);
+    try {
+      res.writeHead((meta && meta.status) || 200, headers);
+      headersSent = true;
+    } catch (e) {
+      // 响应头本身是外部输入(来自被代理机器的 agent),畸形值(如带 CRLF 的头)会让
+      // writeHead 同步抛异常;这一层若不兜住,异常会顺着帧处理一路冒出去被 hub.js
+      // 的帧级 try/catch 吞掉——浏览器请求会永久挂起,不报错也不超时。必须在这里
+      // 明确回 502 并中止这条流,而不是让异常悄悄消失。
+      try {
+        res.writeHead(502, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(offlinePage(serverId));
+      } catch { /* 连 502 都发不出去,连接大概率已经坏了,交给下面 fail() 中止流 */ }
+      stream.fail(`响应头非法:${e.message}`);
+    }
   });
   stream.on('data', (chunk) => res.write(chunk));
   stream.on('end', () => res.end());

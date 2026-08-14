@@ -73,12 +73,83 @@ test('HTTP 代理:服务器离线返回 502 中文页面', async (t) => {
   assert.match(text, /离线/);
 });
 
+// 终审 I-4:两层头部净化各自只有纯函数直测,从未验证"调用方真的调用了它们"——
+// 把 proxyHttp 里 sanitizeRequestHeaders(req.headers) 悄悄改回 req.headers,
+// 之前全部 141 个用例照样全绿。这里直接测真实调用点 proxyHttp(),而不是绕过它
+// 直接调 sanitizeRequestHeaders() 纯函数,才能钉住"调用方真的在用它"这件事。
+test('HTTP 代理调用点(I-4 网关侧):cookie/origin/伪造 x-ccw-token 不会被塞进发给 agent 的流', async (t) => {
+  let seenMeta = null;
+  const hub = hubWithAgent((s) => {
+    seenMeta = s.meta;
+    s.on('end', () => { s.headers({ status: 200, headers: {} }); s.end(); });
+  });
+  const { srv, port } = await listenOnce((req, res) => proxyHttp(hub, 'srv1', req, res, req.url));
+  t.after(() => srv.close());
+  const r = await fetch(`http://127.0.0.1:${port}/x`, {
+    headers: {
+      cookie: 'ccgw_session=real-session',
+      origin: 'http://evil.example',
+      referer: 'http://evil.example/',
+      'x-ccw-token': 'ATTACKER-SUPPLIED',
+      'x-business': 'keep-me',
+    },
+  });
+  assert.equal(r.status, 200);
+  assert.ok(seenMeta, '流应该已经打开,agent 才有机会看见 meta');
+  assert.equal(seenMeta.headers.cookie, undefined, 'proxyHttp 必须真的调用净化函数,而不是透传原始 headers');
+  assert.equal(seenMeta.headers.origin, undefined);
+  assert.equal(seenMeta.headers.referer, undefined);
+  assert.equal(seenMeta.headers['x-ccw-token'], undefined, '浏览器伪造的 x-ccw-token 不能带过隧道');
+  assert.equal(seenMeta.headers['x-business'], 'keep-me', '业务头应该保留');
+});
+
 test('HTTP 代理:agent 中途报错且尚未发响应头时,回 502 而不是挂死', async (t) => {
   const hub = hubWithAgent((s) => s.on('end', () => s.fail('本机 CCTower 没起来')));
   const { srv, port } = await listenOnce((req, res) => proxyHttp(hub, 'srv1', req, res, req.url));
   t.after(() => srv.close());
   const r = await fetch(`http://127.0.0.1:${port}/api/health`);
   assert.equal(r.status, 502);
+});
+
+// 终审 M-3:被代理机器回的响应头本身是外部输入,畸形值(比如带 CRLF)会让
+// res.writeHead 同步抛异常。hub.js 的帧级 try/catch 会把这个异常整个吞掉,浏览器
+// 请求永久挂起(无 502、无超时)。这里直接在 proxy.js 这一层验证:异常必须被兜住,
+// 明确回 502,而不是让它冒出去。
+test('响应头非法时回 502,而不是让浏览器永久挂起(M-3)', async (t) => {
+  const hub = hubWithAgent((s) => {
+    s.on('end', () => {
+      s.headers({ status: 200, headers: { 'x-evil': 'bad\r\nvalue' } });
+      s.end();
+    });
+  });
+  const { srv, port } = await listenOnce((req, res) => proxyHttp(hub, 'srv1', req, res, req.url));
+  t.after(() => srv.close());
+  const r = await fetch(`http://127.0.0.1:${port}/x`);
+  assert.equal(r.status, 502, '非法响应头必须转成 502,而不是挂起');
+});
+
+// 终审 I-6(可低成本收敛的一点):路径式代理让所有被代理机器与网关 UI 共用同一个
+// origin。被攻陷的机器如果在响应里夹带一个与网关会话同名的 Set-Cookie,能覆盖用户
+// 当前登录会话——HttpOnly 挡不住这种"响应体自己设置"的路径。网关必须过滤掉同名 cookie。
+test('响应头净化:被代理机器不能用 Set-Cookie 覆盖网关自己的会话 cookie(I-6)', async (t) => {
+  const hub = hubWithAgent((s) => {
+    s.on('end', () => {
+      s.headers({
+        status: 200,
+        headers: {
+          'set-cookie': ['ccgw_session=ATTACKER-FORGED; Path=/', 'app_theme=dark; Path=/'],
+          'content-type': 'text/html',
+        },
+      });
+      s.end();
+    });
+  });
+  const { srv, port } = await listenOnce((req, res) => proxyHttp(hub, 'srv1', req, res, req.url));
+  t.after(() => srv.close());
+  const r = await fetch(`http://127.0.0.1:${port}/`);
+  const setCookies = r.headers.getSetCookie();
+  assert.ok(!setCookies.some((c) => c.startsWith('ccgw_session=')), '被代理机器不能覆盖网关会话 cookie');
+  assert.ok(setCookies.some((c) => c.startsWith('app_theme=')), '业务 cookie 应该原样保留');
 });
 
 test('WS 桥接:双向消息与 text/binary 语义保持', async () => {
