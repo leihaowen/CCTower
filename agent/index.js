@@ -17,6 +17,7 @@ function createAgent(config, {
   let mux = null;
   let attempt = 0;
   let stopped = false;
+  let running = false; // start() 幂等保护:不经 stop 连续调两次会覆盖 sweepTimer(泄漏)并制造两条活跃 socket
   let reconnectTimer = null;
   let sweepTimer = null;
   let lastFrameAt = 0;
@@ -64,12 +65,17 @@ function createAgent(config, {
 
   return {
     start() {
+      // 已经在跑就直接忽略:重复 start 不该覆盖 sweepTimer 引用(定时器泄漏)或另开一条 socket。
+      // 真要重启,调用方应显式先 stop() 再 start(),语义更清楚,也不会有"哪条连接才是当前连接"的歧义。
+      if (running) return;
+      running = true;
       stopped = false;
       connect();
       sweepTimer = setInterval(sweep, sweepMs);
       if (sweepTimer.unref) sweepTimer.unref();
     },
     stop() {
+      running = false;
       stopped = true;
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
