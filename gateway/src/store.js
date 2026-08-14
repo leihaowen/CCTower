@@ -20,6 +20,10 @@ class Store {
   constructor(dir = defaultDir()) {
     this.dir = dir;
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // 目录已存在时 mode 被忽略,需主动修正权限(不属于自己的目录权限修正失败可接受)
+    try { fs.chmodSync(dir, 0o700); } catch (e) {
+      if (e.code !== 'EPERM') throw e;
+    }
     this.serversFile = path.join(dir, 'servers.json');
     this.configFile = path.join(dir, 'config.json');
   }
@@ -29,10 +33,19 @@ class Store {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
   }
   // 先写临时文件再 rename:断电/并发也不会留下半截 JSON
+  // 并发写会互相踩踏,所以临时文件名必须唯一(pid + 随机后缀)
   _write(file, data) {
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, file);
+    const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+      // 临时文件预置 0644 时会被最终文件继承,写完后显式收紧权限
+      fs.chmodSync(tmp, 0o600);
+      fs.renameSync(tmp, file);
+    } catch (e) {
+      // rename 失败时清理掉自己的临时文件(防止后续读到半截内容)
+      try { fs.unlinkSync(tmp); } catch { }
+      throw e;
+    }
   }
 
   listServers() {
@@ -94,12 +107,14 @@ class Store {
   }
 
   // 会话密钥必须跨重启稳定,否则网关一重启所有人都被登出
+  // 并发首次调用时各进程生成各自的 secret,但要返回磁盘上的最终值(幂等)
   ensureSecret() {
     const cfg = this.getConfig();
     if (cfg.sessionSecret) return cfg.sessionSecret;
     const secret = crypto.randomBytes(32).toString('base64');
     this.setConfig({ sessionSecret: secret });
-    return secret;
+    // 写盘后重新读一次,返回磁盘上的最终值(在并发下可能被其他进程覆盖了)
+    return this.getConfig().sessionSecret;
   }
 }
 
