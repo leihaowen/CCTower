@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · CCTower 网关</title>
+<link rel="stylesheet" href="/gateway.css">
+</head>
+<body>
+<form class="login" id="f">
+  <h1>CCTower 网关</h1>
+  <input id="pw" type="password" placeholder="密码" autocomplete="current-password" autofocus>
+  <div class="err" id="err"></div>
+  <button type="submit">登录</button>
+</form>
+<script>
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = document.getElementById('err');
+  err.textContent = '';
+  const r = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ password: document.getElementById('pw').value }),
+  });
+  if (r.ok) { location.href = '/'; return; }
+  const body = await r.json().catch(() => ({}));
+  err.textContent = body.error || '登录失败';
+});
+</script>
+</body>
+</html>

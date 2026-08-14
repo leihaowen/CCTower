@@ -5,7 +5,9 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "gateway": "node gateway/index.js",
+    "gateway-cli": "node gateway/cli.js"
   },
   "keywords": [
     "claude-code",
