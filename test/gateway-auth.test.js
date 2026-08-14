@@ -80,3 +80,36 @@ test('限速:登录成功后 reset,让正常用户不被自己之前的失败拖
   rl.reset('ip');
   assert.equal(rl.allow('ip'), true);
 });
+
+test('密码:哈希长度不对(salt 合法但摘要错误)拒绝', () => {
+  // 构造格式正确但哈希长度错误的存储值:scrypt$<合法salt>$<错误长度hash>
+  const validSalt = Buffer.alloc(16).toString('base64');
+  const shortHash = Buffer.alloc(16).toString('base64'); // 应该是 32 字节
+  const malformed = `scrypt$${validSalt}$${shortHash}`;
+  assert.equal(verifyPassword('anything', malformed), false, '哈希长度错误应拒绝');
+});
+
+test('cookie:value 含分号/换行/控制字符时抛出中文错误', () => {
+  for (const bad of ['a;b', 'a\nb', 'a\rb', 'a\x00b', 'a\x1Fb']) {
+    assert.throws(
+      () => buildCookie(bad),
+      /Cookie 值不能含分号、换行或控制字符/,
+      `值 ${JSON.stringify(bad)} 应抛异常`
+    );
+  }
+});
+
+test('限速:大量不同 key 超窗口后被惰性清理', () => {
+  let clock = 0;
+  const rl = new RateLimiter({ limit: 1, windowMs: 1000, now: () => clock });
+  // 塞进 1000 个不同 key,每个各调用一次 allow
+  for (let i = 0; i < 1000; i++) {
+    rl.allow(`ip_${i}`);
+  }
+  assert.equal(rl.size(), 1000, '1000 个 key 应全部存在');
+  // 时间推进超过一个窗口
+  clock += 1001;
+  // 再调用一次 allow 触发清理
+  rl.allow('trigger');
+  assert.ok(rl.size() < 100, `清理后 Map 大小应回落,实际 ${rl.size()}`);
+});

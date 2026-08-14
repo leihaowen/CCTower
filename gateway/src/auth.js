@@ -20,7 +20,10 @@ function verifyPassword(password, stored) {
   try {
     salt = Buffer.from(parts[1], 'base64');
     expect = Buffer.from(parts[2], 'base64');
-  } catch { return false; }
+  } catch {
+    // 当前 Node.js Buffer.from('base64') 不抛异常,这里是防御未来版本行为变化的保险
+    return false;
+  }
   if (salt.length === 0 || expect.length !== KEY_LEN) return false;
   const got = crypto.scryptSync(String(password), salt, KEY_LEN, SCRYPT);
   return crypto.timingSafeEqual(got, expect);
@@ -47,6 +50,10 @@ function verifySession(secret, token, nowSec = Math.floor(Date.now() / 1000)) {
 
 // secure=false 只给本地 http 调试用:浏览器不会存 http 页面下带 Secure 的 cookie
 function buildCookie(value, { maxAgeSec = SESSION_TTL_SEC, secure = true } = {}) {
+  // cookie 值不能含 ;、换行、控制字符,否则会注入额外属性或破坏解析
+  if (/[;\r\n\x00-\x1F\x7F]/.test(value)) {
+    throw new Error('Cookie 值不能含分号、换行或控制字符');
+  }
   return `${SESSION_COOKIE}=${value}; Path=/; HttpOnly;${secure ? ' Secure;' : ''} SameSite=Lax; Max-Age=${maxAgeSec}`;
 }
 function clearCookie({ secure = true } = {}) {
@@ -73,6 +80,7 @@ class RateLimiter {
     this.windowMs = windowMs;
     this.now = now;
     this.hits = new Map();
+    this.lastSweepAt = 0;
   }
   allow(key) {
     const t = this.now();
@@ -80,9 +88,19 @@ class RateLimiter {
     if (arr.length >= this.limit) { this.hits.set(key, arr); return false; }
     arr.push(t);
     this.hits.set(key, arr);
+    // 惰性清理:每隔一个窗口周期扫一遍,删除所有已过期的 key,防止 Map 无界增长
+    if (t - this.lastSweepAt >= this.windowMs) {
+      this.lastSweepAt = t;
+      for (const [k, timestamps] of this.hits.entries()) {
+        if (timestamps.every((ts) => t - ts >= this.windowMs)) {
+          this.hits.delete(k);
+        }
+      }
+    }
     return true;
   }
   reset(key) { this.hits.delete(key); }
+  size() { return this.hits.size; }
 }
 
 module.exports = {
