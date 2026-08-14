@@ -16,6 +16,15 @@ test('snapshot 覆盖该服务器的全部会话', () => {
   assert.deepEqual(statusCounts(st, 'a'), { ready: 1 }, '旧会话必须被整体替换');
 });
 
+test('statusCounts 正确累加同一状态的多个会话', () => {
+  const st = createState();
+  applyMessage(st, 'a', { type: 'snapshot', sessions: [
+    { id: '1', status: 'executing' }, { id: '2', status: 'executing' }, { id: '3', status: 'needs_decision' },
+    { id: '4', status: 'ready' }, { id: '5', status: 'ready' }, { id: '6', status: 'ready' },
+  ] });
+  assert.deepEqual(statusCounts(st, 'a'), { executing: 2, needs_decision: 1, ready: 3 }, '必须正确累加每个状态的会话数');
+});
+
 test('session 消息增删改单个会话', () => {
   const st = createState();
   applyMessage(st, 'a', { type: 'snapshot', sessions: [{ id: '1', status: 'ready' }] });
