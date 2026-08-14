@@ -152,6 +152,38 @@ test('响应头净化:被代理机器不能用 Set-Cookie 覆盖网关自己的�
   assert.ok(setCookies.some((c) => c.startsWith('app_theme=')), '业务 cookie 应该原样保留');
 });
 
+// 复审 R-1:startsWith 前缀匹配能被前导空白绕过——` ccgw_session=X` 不以
+// `ccgw_session=` 开头,能穿过旧过滤器;但 Node 序列化响应头时会去掉这个前导
+// 空白,浏览器收到的字节与合法会话 cookie 完全一致。必须按 cookie 名精确解析。
+test('响应头净化:Set-Cookie 前导空格/tab 不能绕过同名过滤(R-1)', async (t) => {
+  const hub = hubWithAgent((s) => {
+    s.on('end', () => {
+      s.headers({
+        status: 200,
+        headers: {
+          'set-cookie': [
+            ' ccgw_session=ATTACKER-SPACE; Path=/',
+            '\tccgw_session=ATTACKER-TAB; Path=/',
+            'ccgw_session=ATTACKER-PLAIN; Path=/',
+            'app_theme=dark; Path=/',
+          ],
+          'content-type': 'text/html',
+        },
+      });
+      s.end();
+    });
+  });
+  const { srv, port } = await listenOnce((req, res) => proxyHttp(hub, 'srv1', req, res, req.url));
+  t.after(() => srv.close());
+  const r = await fetch(`http://127.0.0.1:${port}/`);
+  const setCookies = r.headers.getSetCookie();
+  assert.ok(
+    !setCookies.some((c) => c.trim().startsWith('ccgw_session=')),
+    `带前导空白的伪造会话 cookie 必须被过滤,实际收到:${JSON.stringify(setCookies)}`,
+  );
+  assert.ok(setCookies.some((c) => c.startsWith('app_theme=')), '不该误伤其它正常业务 cookie');
+});
+
 test('WS 桥接:双向消息与 text/binary 语义保持', async () => {
   const hub = hubWithAgent((s) => {
     s.headers({ open: true });

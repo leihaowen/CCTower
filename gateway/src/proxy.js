@@ -54,8 +54,13 @@ function proxyHttp(hub, serverId, req, res, targetPath) {
         // 覆盖用户当前的登录会话(伪造成攻击者已知的值,持续把人踢下线或劫持登录态)。
         // 网关自己的会话 cookie 只能由网关自己签发,这里把同名的 cookie 过滤掉,
         // 其余业务 cookie 原样保留。
+        // 复审 R-1:不能用 startsWith 做前缀匹配——`ccgw_session` 前面随便加一个空格
+        // (如 ` ccgw_session=ATTACKER; Path=/`)就能绕过前缀检查,而 Node 在把该值
+        // 写进响应时会去掉这个前导空白,浏览器收到的字节与合法会话 cookie 完全一致。
+        // 必须按 cookie 语法(name=value 由 `;` 分隔多个属性,name 前可以有空白)
+        // 正确解析出 cookie 名再比较。
         const arr = (Array.isArray(v) ? v : [v]).filter(
-          (c) => !String(c).startsWith(`${SESSION_COOKIE}=`),
+          (c) => String(c).split(';')[0].split('=')[0].trim() !== SESSION_COOKIE,
         );
         if (arr.length) headers[k] = arr;
         continue;
