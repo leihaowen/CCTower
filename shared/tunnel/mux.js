@@ -99,7 +99,7 @@ class Mux extends EventEmitter {
 
   _control(frame) { this._send(encodeControl(frame), false); }
   _data(streamId, payload) { this._send(encodeData(streamId, payload), true); }
-  _collect(s) { if (s.localEnded && s.remoteEnded) this._forget(s.id); }
+  _collect(s) { if (s.localEnded && s.remoteEnded) { s.destroyed = true; this._forget(s.id); } }
   _forget(id) { this._streams.delete(id); }
 }
 

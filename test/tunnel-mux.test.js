@@ -126,3 +126,30 @@ test('initiator 与非 initiator 的 streamId 不会撞号', () => {
   assert.equal(a.open({}).id % 2, 1);
   assert.equal(b.open({}).id % 2, 0);
 });
+
+test('双端 end 之后再调 fail() 不会发幽灵错误帧', async () => {
+  // destroyed 与"流是否在 _streams 表里"必须等价:
+  // 流被回收时即置 destroyed=true,防止调用方持有引用后再 .fail() 发鬼帧
+  const [a, b] = pair();
+  const serverSide = new Promise((res) => b.once('stream', res));
+  const cs = a.open({ type: 'http', path: '/x' });
+  const ss = await serverSide;
+
+  cs.end();
+  ss.end();
+  await tick();
+  // 此时流应该已从两侧的 _streams 表里删掉了
+  assert.equal(a.streamCount(), 0);
+  assert.equal(b.streamCount(), 0);
+
+  // 计数发送次数,不应该再有新的控制帧
+  let sendCount = 0;
+  const origSend = a._send;
+  a._send = () => { sendCount++; origSend.call(a, ...arguments); };
+
+  // 再调 fail(),不应该触发任何发送
+  cs.fail('迟到的错误');
+  await tick();
+  assert.equal(sendCount, 0, '双端 end 后的 fail() 不应该发任何帧');
+});
+
