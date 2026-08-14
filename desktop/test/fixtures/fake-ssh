@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# 假 ssh:行为由 FAKE_SSH_MODE 控制,argv 原样写到 FAKE_SSH_ARGS_FILE 供断言
+[ -n "$FAKE_SSH_ARGS_FILE" ] && printf '%s\n' "$@" > "$FAKE_SSH_ARGS_FILE"
+case "$FAKE_SSH_MODE" in
+  authfail) echo "user@host: Permission denied (publickey)." >&2; exit 255 ;;
+  exit1)    exit 1 ;;
+  *)        sleep 3600 ;;
+esac

@@ -342,7 +342,10 @@ let hoverTimer = null;
 function bindHover(cardEl, sessionId) {
   const show = () => {
     const s = state.sessions.get(sessionId);
-    if (!s) return;
+    // 卡片可能已经被重渲染摘掉了(在 380ms 延迟内点开会话就会):脱离文档后
+    // getBoundingClientRect() 全是 0,浮层会被摁到左上角;而且它收不到 mouseleave,
+    // 于是永远关不掉。这种情况直接别显示。
+    if (!s || !cardEl.isConnected) return;
     popover.innerHTML = briefHTML(s);
     popover.hidden = false;
     const r = cardEl.getBoundingClientRect();
@@ -357,7 +360,13 @@ function bindHover(cardEl, sessionId) {
   const leave = () => { clearTimeout(hoverTimer); popover.hidden = true; };
   cardEl.addEventListener('mouseenter', enter);
   cardEl.addEventListener('mouseleave', leave);
-  cardEl.addEventListener('focus', enter);
+  // 卡片是 tabindex="0",点一下就会获得焦点——直接绑 focus 会让"点击"也弹浮层,
+  // 而浮层本意只在悬停时出现。:focus-visible 只在键盘导航(Tab)时匹配,鼠标点击不匹配,
+  // 于是点击不再弹浮层,键盘用户仍能看到 Brief。
+  cardEl.addEventListener('focus', () => {
+    // 老 WebKit 不认 :focus-visible 时 matches() 会抛;按"只在悬停时弹"的本意退回不弹。
+    try { if (cardEl.matches(':focus-visible')) enter(); } catch { /* 不弹 */ }
+  });
   cardEl.addEventListener('blur', leave);
 }
 
@@ -369,6 +378,9 @@ function render() {
   $('#sessions-count').textContent = active.length;
   $('#canvas-count').textContent = active.length;
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
+  // 不在这里 clearTimeout(hoverTimer):render 除了 WS 事件还有 30 秒定时器在触发,
+  // 正好落在悬停延迟内就会取消本该弹出的浮层。挂起的定时器晚一步触发也无害——
+  // 那时卡片已被换掉,show() 里的 isConnected 判断会拦住它。
   popover.hidden = true;
   // 画布持有 xterm / 监听器,离开视图必须显式拆掉
   if (state.view !== 'canvas' && window.CCCanvas && CCCanvas.isActive()) CCCanvas.dispose();
@@ -464,13 +476,26 @@ function renderSessions() {
     const on = group === 'f' ? state.filter === id : state.typeFilter === id;
     return `<button class="chip ${on ? 'on' : ''}" data-${group}="${id}">${label}</button>`;
   };
-  main.innerHTML = `<div class="page-head"><h1>All Sessions</h1><span class="sub">共 ${list.length} 条</span></div>
+  // 按项目目录分组:同一文件夹的会话放一起。list 已按最近活动排序,
+  // 因此每组第一条就是组内最新 → 组间直接按首条排序即可
+  const groups = new Map();
+  for (const s of list) {
+    const k = s.projectDir || '(未知目录)';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(s);
+  }
+  const sections = [...groups.entries()].map(([dir, ss]) => `
+    <section class="group">
+      <div class="group-head proj" title="${esc(dir)}">▸ ${esc(dirTail(dir))}<span class="path">${esc(dir)}</span><span class="n">${ss.length}</span></div>
+      <div class="cards">${ss.map(cardHTML).join('')}</div>
+    </section>`).join('');
+  main.innerHTML = `<div class="page-head"><h1>All Sessions</h1><span class="sub">共 ${list.length} 条 · ${groups.size} 个项目</span></div>
     <div class="filters">
       ${chip('active', '全部活跃', 'f')}${chip('attention', '需要注意', 'f')}${chip('archived', '已归档', 'f')}
       <span style="width:12px"></span>
       ${chip('all', '所有类型', 't')}${chip('claude', 'Claude Code', 't')}${chip('terminal', 'Terminal', 't')}
     </div>
-    <div class="cards">${list.map(cardHTML).join('') || '<div class="empty"><strong>没有匹配的 session</strong></div>'}</div>`;
+    ${sections || '<div class="empty"><strong>没有匹配的 session</strong></div>'}`;
   main.querySelectorAll('[data-f]').forEach((b) => b.onclick = () => { state.filter = b.dataset.f; render(); });
   main.querySelectorAll('[data-t]').forEach((b) => b.onclick = () => { state.typeFilter = b.dataset.t; render(); });
   wireCards();
@@ -693,6 +718,7 @@ function renderWorkspace() {
       <span class="status-pill" id="ws-pill" style="--pc:${st.color}"><span class="dot"></span>${st.label}</span>
       <span class="ws-meta" id="ws-meta"></span>
       <div class="ws-actions">
+        <button class="btn-ghost" id="ws-release" title="交出键盘控制权,本视图变为只读观察" hidden>退出接管</button>
         <button class="btn-ghost" id="ws-redraw" title="重连终端并让 TUI 全量重绘,修复画面/尺寸异常">⟳ 刷新画面</button>
         ${s.worktree ? '<button class="btn-ghost" id="ws-review">审阅改动</button>' : ''}
         <button class="btn-ghost" id="ws-refresh">刷新摘要</button>
@@ -788,15 +814,24 @@ function renderWorkspace() {
   });
 
   let controller = false;
+  let released = false; // 本视图内主动退出过接管:断线重连后不再自动抢回
   const connectTerm = (replay) => {
     if (replay && term) term.reset(); // 重连时服务端会整体回放缓冲区,先清屏避免重复
+    // 进入会话即接管,但每条连接只自动抢一次:之后控制权被别的窗口拿走时
+    // 只显示只读条不回抢,否则两个都开着的窗口会无限互抢
+    let autoTake = !released;
     termWs = new WebSocket(`${WS_BASE}/ws/term/${s.id}`, wsProto());
     termWs.onmessage = (e) => {
       const m = JSON.parse(e.data);
       if (m.type === 'data') term.write(m.data);
       else if (m.type === 'role') {
+        if (!m.controller && autoTake && termWs.readyState === 1) {
+          termWs.send(JSON.stringify({ type: 'take-control' })); // 服务端随后会广播新 role
+        }
+        autoTake = false;
         controller = m.controller;
         $('#ro-bar') && ($('#ro-bar').hidden = controller);
+        $('#ws-release') && ($('#ws-release').hidden = !controller);
         if (controller && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
       } else if (m.type === 'exit') term.write(`\r\n\x1b[90m[进程已退出,code ${m.code}]\x1b[0m\r\n`);
     };
@@ -810,7 +845,14 @@ function renderWorkspace() {
   connectTerm(false);
   term.onData((d) => { if (controller && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'input', data: d })); });
   term.onResize(({ cols, rows }) => { if (controller && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols, rows })); });
-  $('#ro-take').onclick = () => termWs.readyState === 1 && termWs.send(JSON.stringify({ type: 'take-control' }));
+  $('#ro-take').onclick = () => {
+    released = false; // 手动接回后,后续重连恢复自动接管
+    if (termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'take-control' }));
+  };
+  $('#ws-release').onclick = () => {
+    released = true;
+    if (termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'release-control' }));
+  };
   termRO = new ResizeObserver(() => fit && fit.fit());
   termRO.observe($('#term-host'));
 

@@ -99,10 +99,18 @@ webhook(默认关闭)。
 
 完整信任模型、已知限制与漏洞报告方式见 **[SECURITY.md](SECURITY.md)**。
 
+## 桌面客户端(实验性)
+
+不想开浏览器盯着网页?`desktop/` 下有一个 Tauri 2 桌面壳:托盘常驻,通过 SSH 隧道连接你已经在
+跑的 CCTower 服务端(Mac/Linux 桌面 → Linux 服务器),服务器休眠/服务端重启/断网重连都自动处理,
+需要决策时弹系统通知。桌面壳本身不跑服务端,只是"隧道 + 状态感知的壳",服务端部署方式不变。
+
+前置要求、配置方式与手动验收清单见 **[desktop/README.md](desktop/README.md)**。
+
 ## 测试
 
 ```bash
-npm test    # node:test,29 个用例(状态机 / resume / MCP 协议 / gitReview / 暴露面校验)
+npm test    # node:test,44 个用例(状态机 / resume / MCP 协议 / gitReview / 暴露面校验)
 ```
 
 ## License

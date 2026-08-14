@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CCTower</title>
 <link rel="stylesheet" href="/vendor/xterm.css">
-<link rel="stylesheet" href="/style.css?v=28">
+<link rel="stylesheet" href="/style.css?v=30">
 </head>
 <body>
 <div id="connbar" hidden>连接已断开,正在自动重连…</div>
@@ -21,15 +21,15 @@
         <span class="nav-label">Attention Inbox</span>
         <span class="nav-count" id="inbox-count">0</span>
       </button>
-      <button class="nav-item" data-view="sessions" title="All Sessions">
-        <span class="nav-ico">▤</span>
-        <span class="nav-label">All Sessions</span>
-        <span class="nav-count" id="sessions-count">0</span>
-      </button>
       <button class="nav-item" data-view="canvas" title="Canvas — 无限画布">
         <span class="nav-ico">◳</span>
         <span class="nav-label">Canvas</span>
         <span class="nav-count" id="canvas-count">0</span>
+      </button>
+      <button class="nav-item" data-view="sessions" title="All Sessions — 按项目分组">
+        <span class="nav-ico">▤</span>
+        <span class="nav-label">All Sessions</span>
+        <span class="nav-count" id="sessions-count">0</span>
       </button>
     </nav>
     <div class="sidebar-foot">
@@ -128,7 +128,7 @@
 
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
-<script src="/canvas.js?v=28"></script>
-<script src="/app.js?v=28"></script>
+<script src="/canvas.js?v=30"></script>
+<script src="/app.js?v=30"></script>
 </body>
 </html>

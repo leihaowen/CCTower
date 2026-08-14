@@ -110,3 +110,54 @@ test('未知权限模式被拒绝,合法值放行', () => {
   assert.equal(s.permissionMode, 'plan');
   clearTimeout(m._saveT);
 });
+
+// ---------- 终端控制权:接管 / 退出接管 ----------
+
+function fakeWs() {
+  const ws = {
+    readyState: 1, sent: [], handlers: {},
+    send(x) { this.sent.push(JSON.parse(x)); },
+    on(ev, fn) { this.handlers[ev] = fn; },
+  };
+  ws.emit = (ev, ...args) => ws.handlers[ev] && ws.handlers[ev](...args);
+  ws.lastRole = () => [...ws.sent].reverse().find((m) => m.type === 'role');
+  return ws;
+}
+
+test('take-control / release-control:接管、退出、空缺时新连接自动成为控制者', () => {
+  const m = newManager();
+  const s = m.createSession({ type: 'terminal', projectDir: os.tmpdir(), isolate: false });
+  const rt = m.runtime.get(s.id);
+
+  const c1 = fakeWs(), c2 = fakeWs();
+  m.attach(s.id, c1);
+  assert.equal(rt.controller, c1, '第一个连接自动成为控制者');
+  assert.equal(c1.lastRole().controller, true);
+
+  m.attach(s.id, c2);
+  assert.equal(rt.controller, c1, '第二个连接默认只读');
+  assert.equal(c2.lastRole().controller, false);
+
+  // c2 接管:双方都收到新角色
+  c2.emit('message', JSON.stringify({ type: 'take-control' }));
+  assert.equal(rt.controller, c2);
+  assert.equal(c1.lastRole().controller, false);
+  assert.equal(c2.lastRole().controller, true);
+
+  // 非控制者发 release-control:不生效
+  c1.emit('message', JSON.stringify({ type: 'release-control' }));
+  assert.equal(rt.controller, c2, '非控制者退出接管不应改变控制权');
+
+  // 控制者主动退出:控制权空出,而不是转交
+  c2.emit('message', JSON.stringify({ type: 'release-control' }));
+  assert.equal(rt.controller, null, '控制权应空出');
+  assert.equal(c2.lastRole().controller, false);
+  assert.equal(c1.lastRole().controller, false, '空缺时不静默转交给其他窗口');
+
+  // 空缺时新连接自动成为控制者(配合前端"进入即接管")
+  const c3 = fakeWs();
+  m.attach(s.id, c3);
+  assert.equal(rt.controller, c3);
+  assert.equal(c3.lastRole().controller, true);
+  clearTimeout(m._saveT);
+});

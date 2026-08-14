@@ -141,6 +141,10 @@
   <div class="cv-world" id="cv-world"></div>
   <div class="cv-marquee" id="cv-mq" hidden></div>
   <div class="cv-edges" id="cv-edges"></div>
+  <div class="cv-dock" id="cv-dock">
+    <button class="cv-dock-tab" id="cv-dock-tab" title="会话列表:按项目文件夹分组,点击居中该会话">▤ 会话<span class="cv-dock-arrow">⟨</span></button>
+    <div class="cv-dock-body" id="cv-dock-list"></div>
+  </div>
   <div class="cv-map" id="cv-map" title="点击跳转视口">
     <div class="cv-map-label">MINIMAP</div>
     <div class="cv-map-dots" id="cv-map-dots"></div>
@@ -185,6 +189,7 @@
       map: $('#cv-map'), mapDots: $('#cv-map-dots'), mapVp: $('#cv-map-vp'),
       pct: $('#cv-pct'), attn: $('#cv-attn'), attnTxt: $('#cv-attn-txt'),
       mode: $('#cv-mode'), expand: $('#cv-expand'), coach: $('#cv-coach'),
+      dock: $('#cv-dock'), dockList: $('#cv-dock-list'),
     };
     CV.els.clear(); CV.tier.clear();
     CV.mounted = true;
@@ -212,6 +217,18 @@
     $('#cv-sweep').onclick = sweep;
     $('#cv-attn').onclick = nextAttention;
     $('#cv-help').onclick = () => showCoach(true);
+
+    // 停靠列表:自己消化滚轮和按下,别漏给画布变成平移/框选
+    CV.dom.dock.addEventListener('wheel', (e) => e.stopPropagation());
+    CV.dom.dock.addEventListener('mousedown', (e) => e.stopPropagation());
+    $('#cv-dock-tab').onclick = () => setDockOpen(!CV.dockOpen);
+    CV.dom.dockList.addEventListener('click', (e) => {
+      const it = e.target.closest('.cv-dock-it');
+      if (!it) return;
+      select([it.dataset.id]);
+      centerOn(it.dataset.id);
+    });
+    setDockOpen(localStorage.getItem(DOCK_KEY) !== '0', true);
 
     CV.dom.vp.addEventListener('wheel', onWheel, { passive: false });
     CV.dom.vp.addEventListener('mousedown', onVpDown);
@@ -480,6 +497,7 @@
     }
     CV.sel = CV.sel.filter((id) => live.has(id));
     paintAttn();
+    paintDock();
     paintEdges();
     paintMap();
     if (shifted) scheduleRelayout();
@@ -489,6 +507,41 @@
     const A = attnList();
     CV.dom.attn.classList.toggle('on', A.length > 0);
     CV.dom.attnTxt.textContent = A.length ? `${A.length} 个在等你` : '无人等你';
+  }
+
+  /* ---------- 左侧会话停靠列表:按项目文件夹分组,点击居中 ---------- */
+  const DOCK_KEY = 'ccw:cv-dock';
+  function setDockOpen(open, silent) {
+    CV.dockOpen = !!open;
+    if (CV.dom && CV.dom.dock) {
+      CV.dom.dock.classList.toggle('open', CV.dockOpen);
+      const arrow = CV.dom.dock.querySelector('.cv-dock-arrow');
+      if (arrow) arrow.textContent = CV.dockOpen ? '⟨' : '⟩';
+    }
+    try { localStorage.setItem(DOCK_KEY, CV.dockOpen ? '1' : '0'); } catch { /* 隐私模式等存不了就算了 */ }
+    if (!silent) paintDock();
+  }
+  function paintDock() {
+    if (!CV.mounted || !CV.dom || !CV.dom.dockList || !CV.dockOpen) return;
+    // 组内按最近活动排序,组间按组内最新一条排序 —— 和 All Sessions 页一致
+    const groups = new Map();
+    for (const s of sessions()) {
+      const k = s.projectDir || '(未知目录)';
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(s);
+    }
+    const arr = [...groups.entries()].map(([dir, list]) => {
+      list.sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt));
+      return { dir, list, at: Date.parse(list[0].lastActivityAt) || 0 };
+    }).sort((a, b) => b.at - a.at);
+    CV.dom.dockList.innerHTML = arr.map((g) => `
+      <div class="cv-dock-grp">
+        <div class="cv-dock-dir" title="${esc(g.dir)}">${esc(dirTail(g.dir))}<span class="n">${g.list.length}</span></div>
+        ${g.list.map((s) => `
+          <button class="cv-dock-it ${CV.sel.includes(s.id) ? 'on' : ''}" data-id="${s.id}" title="点击居中:${esc(s.name)}">
+            <span class="cv-dock-dot" style="background:${stColor(s)}"></span><span class="cv-dock-nm">${esc(s.name)}</span>
+          </button>`).join('')}
+      </div>`).join('') || '<div class="cv-dock-empty">暂无会话</div>';
   }
 
   /* ---------- 尺寸 ---------- */
@@ -725,6 +778,12 @@
     const next = new Set(ids);
     for (const [id, p] of CV.els) p.root.classList.toggle('sel', next.has(id));
     CV.sel = [...next];
+    // 停靠列表同步高亮:只改 class,不重建(重建会打断正在进行的滚动)
+    if (CV.dom && CV.dom.dockList) {
+      CV.dom.dockList.querySelectorAll('.cv-dock-it').forEach((el) => {
+        el.classList.toggle('on', next.has(el.dataset.id));
+      });
+    }
   }
 
   function onTileDown(id, e) {
@@ -1022,13 +1081,20 @@
     const showDims = () => { if (ptyEl && CV.term) ptyEl.textContent = `PTY ${CV.term.cols}×${CV.term.rows}`; };
     showDims();
 
+    // 展开即接管:只在首个 role 消息时自动抢一次,之后被别的窗口拿走不回抢
+    // (两个视图无限互抢会死循环);按钮双态:接管中显示「退出接管」
+    let autoTake = true;
     CV.termWs = new WebSocket(`${WS_BASE}/ws/term/${s.id}`, wsProto());
     CV.termWs.onmessage = (e) => {
       const m = JSON.parse(e.data);
       if (m.type === 'data') CV.term.write(m.data);
       else if (m.type === 'role') {
+        if (!m.controller && autoTake && CV.termWs.readyState === 1) {
+          CV.termWs.send(JSON.stringify({ type: 'take-control' })); // 服务端随后广播新 role
+        }
+        autoTake = false;
         CV.termCtl = m.controller;
-        if (takeEl) takeEl.hidden = m.controller;
+        if (takeEl) { takeEl.hidden = false; takeEl.textContent = m.controller ? '退出接管' : '接管控制'; }
         if (hintEl) hintEl.textContent = m.controller ? '键盘直连 PTY · Esc 收起' : '只读观察 —— 点「接管控制」后才能输入';
         if (m.controller && CV.termWs.readyState === 1) {
           CV.termWs.send(JSON.stringify({ type: 'resize', cols: CV.term.cols, rows: CV.term.rows }));
@@ -1038,7 +1104,10 @@
       }
     };
     CV.termWs.onclose = () => { if (hintEl && CV.expanded) hintEl.textContent = '连接已断开'; };
-    if (takeEl) takeEl.onclick = () => CV.termWs.readyState === 1 && CV.termWs.send(JSON.stringify({ type: 'take-control' }));
+    if (takeEl) takeEl.onclick = () => {
+      if (CV.termWs.readyState !== 1) return;
+      CV.termWs.send(JSON.stringify({ type: CV.termCtl ? 'release-control' : 'take-control' }));
+    };
     CV.term.onData((d) => { if (CV.termCtl && CV.termWs.readyState === 1) CV.termWs.send(JSON.stringify({ type: 'input', data: d })); });
     CV.term.onResize(({ cols, rows }) => {
       showDims();

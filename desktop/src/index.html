@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CCTower</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <aside id="sidebar">
+      <div id="sidebar-head">
+        <span class="head-title">服务器</span>
+        <button id="sidebar-toggle" type="button" aria-label="收起侧栏" aria-expanded="true">«</button>
+      </div>
+      <p id="notify-denied" hidden>通知权限未开启,注意力事件不会弹系统通知。请到「系统设置 › 通知」里允许 CCTower。</p>
+      <div id="server-list"></div>
+      <form id="add-form">
+        <h3>添加服务器</h3>
+        <input name="sshAlias" placeholder="ssh 别名(必填)" required />
+        <input name="name" placeholder="显示名(可选)" />
+        <input name="remotePort" placeholder="远端端口,默认 7080" />
+        <input name="token" placeholder="令牌(服务器设了 CCW_TOKEN 才填)" />
+        <button type="submit">添加</button>
+        <p id="form-error"></p>
+      </form>
+    </aside>
+    <main id="content"></main>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

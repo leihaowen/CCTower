@@ -124,6 +124,8 @@ CCW_PORT=8123 CCW_TOKEN=$(openssl rand -hex 16) npm start
 - 目录浏览接口只允许访问 home 与启动目录(或 `CCW_BROWSE_ROOTS`),经真实路径校验,防止遍历整机文件系统。
 - 创建会话的"附加参数"会拒绝覆盖平台自有标志(`--settings` / `--mcp-config` / `--append-system-prompt` / `--permission-mode` 等),避免绕过状态采集与权限控制;权限模式仅接受已知取值。
 - `.ccw-data/` 含 hooks 配置、会话状态,已被 `.gitignore` 忽略;凭据类文件以 `0600` 权限写入。
+- 桌面壳(`desktop/`)经 SSH 隧道访问时无需 `CCW_TOKEN` / `CCW_ALLOWED_HOSTS`:隧道本身就是认证边界
+  (能建隧道说明已经拿到 ssh 密钥),服务端已内置任意端口回环 Host/Origin 放宽来配合隧道的动态本地端口。
 
 ---
 

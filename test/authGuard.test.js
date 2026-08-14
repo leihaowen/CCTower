@@ -111,3 +111,19 @@ test('server/index.js 在只绑回环且无令牌时正常启动', async () => {
   fs.rmSync(dataDir, { recursive: true, force: true });
   assert.ok(started, `本机自用形态不应被拦下;输出:${out.slice(0, 300)}`);
 });
+
+test('isLoopbackHostHeader:任意端口的回环 Host 都放行', () => {
+  const { isLoopbackHostHeader } = require('../server/authGuard');
+  for (const h of ['127.0.0.1:17081', '127.0.0.1:7080', 'localhost:17999', 'localhost',
+    '[::1]:7080', 'tauri.localhost', '127.255.0.1:80']) {
+    assert.equal(isLoopbackHostHeader(h), true, h);
+  }
+});
+
+test('isLoopbackHostHeader:非回环一律拒绝', () => {
+  const { isLoopbackHostHeader } = require('../server/authGuard');
+  for (const h of ['192.168.1.5:7080', 'evil.com', 'evil.com:7080', '127.0.0.1.evil.com',
+    'localhost.evil.com', '', null, undefined, '0.0.0.0:7080', '[::]:7080']) {
+    assert.equal(isLoopbackHostHeader(h), false, String(h));
+  }
+});

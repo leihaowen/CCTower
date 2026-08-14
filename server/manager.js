@@ -527,6 +527,15 @@ class SessionManager {
           if (c.readyState === 1) c.send(JSON.stringify({ type: 'role', controller: c === ws }));
         }
         void prev;
+      } else if (m.type === 'release-control') {
+        // 主动退出接管:控制权空出而不是转交——转交给谁是接的人自己决定的
+        // (点「接管控制」或新开视图自动接管),静默塞给别的窗口反而吓人
+        if (rt.controller === ws) {
+          rt.controller = null;
+          for (const c of rt.clients) {
+            if (c.readyState === 1) c.send(JSON.stringify({ type: 'role', controller: false }));
+          }
+        }
       }
     });
     ws.on('close', () => {

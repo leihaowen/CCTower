@@ -1,0 +1,284 @@
+/* M2 主窗口:侧栏(可折叠)+ 内容区铺满 + iframe 无边框铺满。
+   配色固定深色,不跟随系统 prefers-color-scheme——内容区是远端伺服的网页版,
+   壳跟着系统在深浅之间跳会和内容区打架,固定深色两边才一致。
+   窗口边框/标题栏的深色在 tauri.conf.json 的 window.theme 上,CSS 管不到。 */
+
+:root {
+  --bg: #1b1b1d;
+  --bg-side: #232326;
+  --bg-row-hover: #2c2c30;
+  --bg-row-active: #2f4668;
+  --bg-input: #17171a;
+  --border: #34343a;
+  --border-soft: #2b2b30;
+  --fg: #ececef;
+  --fg-dim: #9a9aa2;
+  --accent: #4a7fe0;
+  --danger: #e5544b;
+  --ok: #2ecc71;
+  --warn: #f1c40f;
+  --bg-notice: #4a3a12; /* 提示条底色:压暗的琥珀,深色背景上不刺眼 */
+  --fg-notice: #f3d888;
+
+  /* 侧栏宽度:展开够放最长的表单占位文字,折叠只留状态点轨道 */
+  --sidebar-w: 208px;
+  --sidebar-w-collapsed: 56px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+  color-scheme: dark; /* 让滚动条、原生控件也走深色 */
+}
+
+body {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* 左栏:展开 208px / 折叠 56px,服务器列表 + 添加表单 */
+#sidebar {
+  width: var(--sidebar-w);
+  flex: 0 0 var(--sidebar-w);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-side);
+  border-right: 1px solid var(--border);
+  overflow: hidden; /* 折叠时不出横向滚动条 */
+  transition: width 120ms ease, flex-basis 120ms ease;
+}
+
+body.sidebar-collapsed #sidebar {
+  width: var(--sidebar-w-collapsed);
+  flex-basis: var(--sidebar-w-collapsed);
+}
+
+/* 顶部条:标题 + 折叠按钮。折叠后只剩按钮,居中 */
+#sidebar-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+#sidebar-head .head-title {
+  flex: 1 1 auto;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+#sidebar-toggle {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 1;
+}
+
+#sidebar-toggle:hover {
+  background: var(--bg-row-hover);
+  color: var(--fg);
+}
+
+body.sidebar-collapsed #sidebar-head {
+  justify-content: center;
+  padding: 8px 0;
+}
+
+body.sidebar-collapsed #sidebar-head .head-title {
+  display: none;
+}
+
+/* 通知权限被拒的提示条:折叠态放不下,收起 */
+#notify-denied {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--bg-notice);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-notice);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+#notify-denied[hidden] {
+  display: none;
+}
+
+body.sidebar-collapsed #notify-denied {
+  display: none;
+}
+
+#server-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.server-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.server-row:hover {
+  background: var(--bg-row-hover);
+}
+
+.server-row.active {
+  background: var(--bg-row-active);
+}
+
+.server-row .name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 折叠态:只留状态点与角标,名称与"启动"按钮让位;整行仍可点着切服务器
+   (行上挂了 title,悬停能看到是哪台) */
+body.sidebar-collapsed .server-row {
+  justify-content: center;
+  gap: 5px;
+  padding: 10px 6px;
+}
+
+body.sidebar-collapsed .server-row .name,
+body.sidebar-collapsed .server-row button {
+  display: none;
+}
+
+/* 状态点:绿(up)/黄(server-down)/红(auth-failed)/灰(其余) */
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--fg-dim); /* 默认灰,覆盖 idle/connecting/retrying */
+}
+
+.dot-up {
+  background: var(--ok);
+}
+
+.dot-down {
+  background: var(--warn);
+}
+
+.dot-err {
+  background: var(--danger);
+}
+
+.badge {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+  flex: 0 0 auto;
+}
+
+.server-row button {
+  margin-left: auto;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--fg);
+}
+
+/* 添加表单:折叠时整块收掉 */
+#add-form {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+
+body.sidebar-collapsed #add-form {
+  display: none;
+}
+
+#add-form h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+
+#add-form input,
+#add-form button {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+#add-form input {
+  background: var(--bg-input);
+  color: var(--fg);
+}
+
+#add-form input::placeholder {
+  color: var(--fg-dim);
+}
+
+#add-form button {
+  cursor: pointer;
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+#form-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+/* 右侧内容区:铺满剩余空间,iframe 无边框铺满 */
+#content {
+  flex: 1 1 auto;
+  position: relative;
+  background: var(--bg);
+}
+
+#content iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}

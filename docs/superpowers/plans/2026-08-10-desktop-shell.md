@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - Node ≥ 20;根仓库保持 CommonJS,`desktop/` 独立 package.json 用 `"type": "module"`
+- desktop 测试脚本用 `node --test test/*.test.js`(不带引号,由 shell 展开——带引号的 glob 只有 Node 21+ 自行展开,CI 的 Node 20 不认;裸目录参数在 Node 24 有 MODULE_NOT_FOUND bug)
 - 只用 Tauri 2 稳定 API 与官方插件,不用 unstable 特性(multiwebview 等)
 - 一切用户可见文案用中文;代码注释风格与根仓库一致(说约束,不说来历)
 - ssh 别名必须过白名单正则(防参数注入),argv 中别名前必须有 `--`
@@ -283,9 +284,9 @@ test('sshTunnelArgs:argv 精确匹配,别名前有 --', () => {
   ]);
 });
 
-test('sshStartArgs:远程一键启动命令', () => {
+test('sshStartArgs:远程一键启动命令(带 keepalive,防远端挂起无限等)', () => {
   const s = normalizeServer({ sshAlias: 'prod-1' });
-  assert.deepEqual(sshStartArgs(s), ['-o', 'BatchMode=yes', '--', 'prod-1', 'systemctl --user start cctower']);
+  assert.deepEqual(sshStartArgs(s), ['-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', '--', 'prod-1', 'systemctl --user start cctower']);
 });
 ```
 
@@ -319,7 +320,10 @@ export function sshTunnelArgs(server, localPort) {
 }
 
 export function sshStartArgs(server) {
-  return ['-o', 'BatchMode=yes', '--', server.sshAlias, 'systemctl --user start cctower'];
+  // 一次性远程命令也要 keepalive:远端无响应时靠它超时退出,而不是无限挂住。
+  // 不带 ExitOnForwardFailure —— 没有端口转发,该选项无意义
+  return ['-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
+    '--', server.sshAlias, 'systemctl --user start cctower'];
 }
 ```
 
@@ -899,9 +903,9 @@ import WebSocket from 'ws';
 import { createState, applyMessage } from '../src/core/watcher.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const PORT = 17977;
+const PORT = 18977; // 必须在 17080–17999(隧道动态端口池)之外,否则真机上会撞端口
 
-async function waitHttp(url, ms = 10000) {
+async function waitHttp(url, ms = 30000) { // 起真服务端 + 并行跑测试,10000 会偶发超时
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     try { const r = await fetch(url); if (r.status < 500) return; } catch { }
@@ -932,8 +936,15 @@ test('真服务端:伪造隧道 Host + tauri Origin 仍能连 WS 并拿到 snaps
     const st = createState();
     applyMessage(st, 'e2e', msg); // 契约:归约器能直接消费真实消息
   } finally {
+    // 必须等进程真的退出再删:服务端的优雅退出会先把状态落盘(最多 2 秒),
+    // 不等就删会撞 ENOTEMPTY(CI 上偶发失败过)
     srv.kill('SIGTERM');
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    await new Promise((resolve) => {
+      if (srv.exitCode !== null || srv.signalCode !== null) return resolve();
+      const t = setTimeout(() => { srv.kill('SIGKILL'); resolve(); }, 5000);
+      srv.once('exit', () => { clearTimeout(t); resolve(); });
+    });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 ```

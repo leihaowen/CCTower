@@ -5,7 +5,7 @@ const fs = require('fs');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const { SessionManager } = require('./manager');
-const { auditExposure, tokenMatches } = require('./authGuard');
+const { auditExposure, tokenMatches, isLoopbackHostHeader } = require('./authGuard');
 
 const PORT = Number(process.env.CCW_PORT || 7080);
 // PRD §8 安全要求:默认只绑定 localhost。设 CCW_HOST=0.0.0.0 对外时必须配 CCW_TOKEN
@@ -25,9 +25,12 @@ const ALLOWED_HOSTS = new Set([
   ...(process.env.CCW_ALLOWED_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
 ]);
 function isLocalRequest(headers) {
-  if (!ALLOWED_HOSTS.has(headers.host)) return false;
+  if (!ALLOWED_HOSTS.has(headers.host) && !isLoopbackHostHeader(headers.host)) return false;
   if (headers.origin) {
-    try { return ALLOWED_HOSTS.has(new URL(headers.origin).host); } catch { return false; }
+    try {
+      const h = new URL(headers.origin).host;
+      return ALLOWED_HOSTS.has(h) || isLoopbackHostHeader(h);
+    } catch { return false; }
   }
   return true;
 }
