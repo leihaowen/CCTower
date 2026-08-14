@@ -59,9 +59,17 @@ function createApp({ store, hub, secureCookie = true } = {}) {
   // ---------- 以下均需已登录 ----------
   app.get('/', (_req, res) => res.sendFile('overview.html', { root: PUBLIC_DIR }));
   app.get('/api/overview', (_req, res) => res.json({ servers: hub.overview() }));
-  // 不补尾斜杠的话,页面里的相对路径资源会解析到 /s/ 下面去
-  app.get('/s/:id', (req, res) => res.redirect(301, `/s/${req.params.id}/`));
-  app.use('/s/:id', (req, res) => proxyHttp(hub, req.params.id, req, res, req.url || '/'));
+  app.use('/s/:id', (req, res) => {
+    const id = req.params.id;
+    // express 的路由匹配默认不区分尾斜杠(strict routing 关闭),挂载点 '/s/:id' 下
+    // '/s/<id>' 与 '/s/<id>/' 剥前缀后 req.path 都是 '/',没法在这里分辨;必须看
+    // req.originalUrl 才知道浏览器原始请求到底带没带尾斜杠。只有恰好等于不带尾斜杠
+    // 的那个精确路径时才需要重定向补斜杠——否则会把已经带斜杠的请求也重定向到
+    // 它自己,造成死循环(浏览器/undici 报 redirect count exceeded)。
+    // 不补尾斜杠的话,页面里的相对路径资源会解析到 /s/ 下面去,所以仍要补一次。
+    if (req.originalUrl === `/s/${id}`) return res.redirect(301, `/s/${id}/`);
+    proxyHttp(hub, id, req, res, req.url || '/');
+  });
   app.use(express.static(PUBLIC_DIR));
 
   // ---------- WebSocket ----------
