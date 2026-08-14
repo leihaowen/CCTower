@@ -99,11 +99,23 @@ class Hub extends EventEmitter {
     // 活着的 agent 会通过 mux.handleMessage() 自动回 pong 来刷新 lastFrameAt,
     // 所以无法依靠 deadAfterMs 超时来清理已吊销的服务器。
     // 因此需要显式检查:如果隧道对应的 server 已从 store 删除,立即 detach。
-    const activeServersSet = new Set(this.store.listServers().map(s => s.id));
+
+    let activeServersSet = null;
+    try {
+      // 用严格读取,避免坏掉的 servers.json 把所有健康隧道误杀
+      const servers = this.store.listServersStrict();
+      activeServersSet = new Set(servers.map(s => s.id));
+    } catch (e) {
+      // 读取失败(服务器名单损坏):本轮跳过吊销检查,只做超时判死
+      // 这样可以至少保护活着的隧道不被坏文件击杀
+      // 待文件修复或网关重启后,下一轮 sweep 才恢复吊销检查
+      console.error('[hub.sweep] 服务器名单读取失败,本轮跳过吊销检查:', e.message);
+    }
 
     for (const t of [...this._tunnels.values()]) {
       // 首先检查服务器是否已被删除(token 已吊销)
-      if (!activeServersSet.has(t.id)) {
+      // 仅当成功读取服务器名单时才执行此检查
+      if (activeServersSet && !activeServersSet.has(t.id)) {
         // token 已吊销,连接不能继续活着——立即断开
         this.detach(t.id);
         continue;

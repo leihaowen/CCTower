@@ -54,6 +54,22 @@ class Store {
     return Array.isArray(v) ? v : [];
   }
 
+  // 严格读取:文件不存在时合法(返回空数组),但存在且损坏则抛错。
+  // sweep() 用这个版本来决策吊销,避免坏文件把所有健康隧道误杀。
+  listServersStrict() {
+    try {
+      const content = fs.readFileSync(this.serversFile, 'utf8');
+      const v = JSON.parse(content);
+      if (!Array.isArray(v)) return [];
+      return v;
+    } catch (e) {
+      // ENOENT = 文件不存在,这是合法的初始状态
+      if (e.code === 'ENOENT') return [];
+      // 其他错误(如 JSON 解析失败)表示文件存在但损坏,必须向上报告
+      throw e;
+    }
+  }
+
   addServer(name) {
     const servers = this.listServers();
     const token = newToken();
