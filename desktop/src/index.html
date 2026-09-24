@@ -20,7 +20,10 @@
         <input name="name" placeholder="显示名(可选)" />
         <input name="remotePort" placeholder="远端端口,默认 7080" />
         <input name="token" placeholder="令牌(服务器设了 CCW_TOKEN 才填)" />
-        <button type="submit">添加</button>
+        <div class="form-buttons">
+          <button type="submit">添加</button>
+          <button type="button" id="form-cancel" hidden>取消</button>
+        </div>
         <p id="form-error"></p>
       </form>
     </aside>

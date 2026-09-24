@@ -4,17 +4,26 @@
 import { saveServers, loadServers } from './store.js';
 import { normalizeServer, sshStartArgs } from '../core/servers.js';
 import { attentionCount } from '../core/watcher.js';
+import { STATE_LABEL } from '../core/trayModel.js';
 import { sshRun } from './sshExec.js';
 import { initSidebar } from './sidebar.js';
 
-// up/server-down/auth-failed 才有专属颜色,其余(idle/connecting/retrying)用 .dot 的默认灰
-const DOT = { up: 'dot-up', 'server-down': 'dot-down', 'auth-failed': 'dot-err' };
+// up/server-down/auth-failed/gave-up 才有专属颜色,其余(idle/connecting/retrying)用 .dot 的默认灰
+const DOT = { up: 'dot-up', 'server-down': 'dot-down', 'auth-failed': 'dot-err', 'gave-up': 'dot-err' };
+// 这些状态下隧道已经不会自己再连,给出「重试」入口
+const RETRYABLE = new Set(['gave-up', 'auth-failed']);
+// 删除要点两次:第一次按钮变「确认删除」,超时未点就复原。不用 confirm():
+// 各平台 webview 对原生对话框的支持不一致,点了没反应比误删更让人困惑。
+const DELETE_CONFIRM_MS = 3000;
 
-export function initMainWindow(runtime, { onServersChanged }) {
+export function initMainWindow(runtime, { onServersChanged, onRetry }) {
   const list = document.getElementById('server-list');
   const content = document.getElementById('content');
   const frames = new Map(); // id -> iframe
   let activeId = null;
+  let editingId = null;       // 表单当前在编辑哪台;null = 添加模式
+  let pendingDelete = null;   // 点过一次「删除」、等待确认的那台
+  let pendingTimer = null;
 
   // showServer:内容区用 iframe 直连隧道本地端口,懒创建、切换时只切 display。
   // 退路(Mac 上 WKWebView 若拒绝加载 http iframe/混合内容时启用):改为每台服务器一个
@@ -41,40 +50,109 @@ export function initMainWindow(runtime, { onServersChanged }) {
     if (denied) denied.hidden = runtime.notifyGranted !== false;
 
     list.textContent = '';
-    for (const s of runtime.servers.filter((x) => x.enabled)) {
-      const state = runtime.tunnelStates.get(s.id) || 'idle';
-      const n = attentionCount(runtime.watcher, s.id);
+    for (const s of runtime.servers) {
+      const state = s.enabled ? (runtime.tunnelStates.get(s.id) || 'idle') : 'disabled';
+      const n = s.enabled ? attentionCount(runtime.watcher, s.id) : 0;
       const row = document.createElement('div');
-      row.className = 'server-row' + (s.id === activeId ? ' active' : '');
+      row.className = 'server-row' + (s.id === activeId ? ' active' : '') + (s.enabled ? '' : ' disabled');
       row.innerHTML = `<span class="dot ${DOT[state] || ''}"></span>
         <span class="name"></span>${n ? `<span class="badge">${n}</span>` : ''}`;
       row.querySelector('.name').textContent = s.name;
-      row.title = s.name; // 折叠态名称是隐掉的,靠悬停辨认是哪台
-      row.onclick = () => showServer(s.id);
+      row.title = s.enabled ? `${s.name} · ${STATE_LABEL[state] || state}` : `${s.name}(已停用)`; // 折叠态名称是隐掉的,靠悬停辨认是哪台
+      // 停用的服务器没有隧道,iframe 无处可连,点了也不切
+      if (s.enabled) row.onclick = () => showServer(s.id);
+
+      const actions = document.createElement('div');
+      actions.className = 'row-actions';
       if (state === 'server-down') {
-        const btn = document.createElement('button');
-        btn.textContent = '启动 CCTower';
-        btn.onclick = async (e) => {
-          e.stopPropagation();
+        addAction(actions, '启动 CCTower', async () => {
           const { code, stderr } = await sshRun(sshStartArgs(s));
           if (code !== 0) alert(`启动失败:\n${stderr.slice(0, 500)}`);
-        };
-        row.appendChild(btn);
+        });
       }
+      if (s.enabled && RETRYABLE.has(state)) addAction(actions, '重试', () => onRetry(s.id));
+      addAction(actions, '编辑', () => startEdit(s));
+      addAction(actions, s.enabled ? '停用' : '启用', () => mutate((all) =>
+        all.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x))));
+      const del = addAction(actions, pendingDelete === s.id ? '确认删除' : '删除', () => {
+        if (pendingDelete !== s.id) { armDelete(s.id); return; }
+        disarmDelete();
+        if (editingId === s.id) resetForm();
+        return mutate((all) => all.filter((x) => x.id !== s.id));
+      });
+      del.classList.add('danger');
+      row.appendChild(actions);
       list.appendChild(row);
     }
   }
 
-  document.getElementById('add-form').onsubmit = async (e) => {
+  function addAction(parent, text, fn) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = text;
+    btn.onclick = async (e) => {
+      e.stopPropagation(); // 别触发行点击的切换
+      try { await fn(); } catch (err) { alert(err.message || String(err)); }
+    };
+    parent.appendChild(btn);
+    return btn;
+  }
+
+  function armDelete(id) {
+    clearTimeout(pendingTimer);
+    pendingDelete = id;
+    pendingTimer = setTimeout(disarmDelete, DELETE_CONFIRM_MS);
+    render();
+  }
+
+  function disarmDelete() {
+    clearTimeout(pendingTimer);
+    pendingDelete = null;
+    render();
+  }
+
+  // 读-改-写配置,再交给 app.js 按差异重建/停止隧道
+  async function mutate(fn) {
+    await saveServers(fn(await loadServers()));
+    await onServersChanged();
+  }
+
+  const form = document.getElementById('add-form');
+  const formTitle = form.querySelector('h3');
+  const submitBtn = form.querySelector('button[type=submit]');
+  const cancelBtn = document.getElementById('form-cancel');
+
+  function startEdit(s) {
+    editingId = s.id;
+    for (const key of ['sshAlias', 'name', 'remotePort', 'token']) form.elements[key].value = s[key] ?? '';
+    formTitle.textContent = `编辑「${s.name}」`;
+    submitBtn.textContent = '保存';
+    cancelBtn.hidden = false;
+    document.getElementById('form-error').textContent = '';
+    form.elements.sshAlias.focus();
+  }
+
+  function resetForm() {
+    editingId = null;
+    form.reset();
+    formTitle.textContent = '添加服务器';
+    submitBtn.textContent = '添加';
+    cancelBtn.hidden = true;
+    document.getElementById('form-error').textContent = '';
+  }
+
+  cancelBtn.onclick = resetForm;
+
+  form.onsubmit = async (e) => {
     e.preventDefault();
-    const fd = new FormData(e.target);
+    const fd = new FormData(form);
     try {
-      const next = normalizeServer(Object.fromEntries(fd.entries()));
-      const all = (await loadServers()).filter((s) => s.id !== next.id).concat(next);
-      await saveServers(all);
-      e.target.reset();
-      document.getElementById('form-error').textContent = '';
-      await onServersChanged(); // app.js 重建该服务器的隧道
+      const orig = editingId && runtime.servers.find((s) => s.id === editingId);
+      // 编辑沿用原来的启用状态;表单里没有这一项,不带上会被 normalizeServer 默认成启用
+      const next = normalizeServer({ ...Object.fromEntries(fd.entries()), enabled: orig ? orig.enabled : true });
+      // id 就是 ssh 别名:编辑时改了别名,旧条目也要一并去掉,否则会留下一台"幽灵"服务器
+      await mutate((all) => all.filter((s) => s.id !== next.id && s.id !== editingId).concat(next));
+      resetForm();
     } catch (err) {
       document.getElementById('form-error').textContent = err.message;
     }

@@ -2,7 +2,7 @@
 // 纯逻辑,时间由 now 参数注入(与 core/tunnel.js 注入 setTimer 同理),便于单测。
 //
 // 三条规则:
-//   1. auth-failed 是终态(重试也不会自己好)→ 立即推,每轮故障只推一次
+//   1. auth-failed / gave-up 是终态(重试也不会自己好)→ 立即推,每轮故障只推一次
 //   2. 非 up 状态持续 SUSTAINED_MS → 推一次;期间恢复 up 就取消,不推
 //   3. 反复进入故障态(窗口内达 FLAP_THRESHOLD 次)→ 推一次"反复重连"
 // 规则 3 是为了盖住规则 2 的盲区:隧道在 up 与故障之间高频抖动时,每次 up 都会
@@ -14,7 +14,7 @@ export const SUSTAINED_MS = 60_000;
 export const FLAP_WINDOW_MS = 120_000;
 export const FLAP_THRESHOLD = 5;
 
-const TERMINAL = new Set(['auth-failed']);
+const TERMINAL = new Set(['auth-failed', 'gave-up']);
 
 export function createAlertState() { return new Map(); }
 

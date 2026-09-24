@@ -1,8 +1,9 @@
 import { attentionCount } from './watcher.js';
 
-const STATE_LABEL = {
+export const STATE_LABEL = {
   idle: '未连接', connecting: '连接中', up: '已连接',
   'server-down': 'CCTower 未运行', 'auth-failed': '密钥不可用', retrying: '重连中',
+  'gave-up': '已停止重试',
 };
 
 export function buildTrayModel(servers, tunnelStates, watcherState) {

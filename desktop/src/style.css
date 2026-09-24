@@ -282,3 +282,67 @@ body.sidebar-collapsed #add-form {
   height: 100%;
   border: 0;
 }
+
+/* 行内操作(编辑/停用/删除/重试):换到名称下方一行,侧栏窄放不下同一行 */
+.server-row {
+  flex-wrap: wrap;
+}
+
+.row-actions {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-left: 18px; /* 与名称对齐(状态点 10px + gap 8px) */
+}
+
+.row-actions button {
+  margin-left: 0;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: transparent;
+}
+
+.row-actions button:hover {
+  color: var(--fg);
+  background: var(--bg-row-hover);
+}
+
+.row-actions button.danger:hover {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.server-row.disabled {
+  cursor: default;
+}
+
+.server-row.disabled .name {
+  color: var(--fg-dim);
+  text-decoration: line-through;
+}
+
+body.sidebar-collapsed .row-actions {
+  display: none;
+}
+
+.form-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.form-buttons button {
+  flex: 1 1 auto;
+}
+
+#add-form #form-cancel {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+#form-cancel[hidden] {
+  display: none;
+}
