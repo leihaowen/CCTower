@@ -1,0 +1,22 @@
+[Unit]
+Description=CCTower 远程访问网关
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cctower
+ExecStart=/usr/bin/node /opt/cctower/gateway/index.js
+Environment=NODE_ENV=production
+# 只听回环,公网入口与 TLS 交给前面的 Caddy
+Environment=CCTOWER_GATEWAY_HOST=127.0.0.1
+Restart=always
+RestartSec=3
+# 数据目录默认在 ~/.cctower-gateway,跟随下面这个用户
+User=cctower
+Group=cctower
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

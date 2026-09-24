@@ -47,8 +47,11 @@ function ago(iso) {
 function dirTail(p) { const parts = (p || '').split('/').filter(Boolean); return parts.slice(-2).join('/'); }
 const authToken = () => localStorage.getItem('ccwToken') || '';
 const authHeaders = () => (authToken() ? { 'X-CCW-Token': authToken() } : {});
+// 经网关访问时页面挂在 /s/<serverId>/ 下,所有请求都要带上这个前缀;
+// 直连本机时它是空串,行为与改造前完全一致。
+const PREFIX = (typeof window !== 'undefined' && window.CCW_PREFIX) || '';
 // WS 协议跟随页面:HTTPS 反代下必须用 wss,否则浏览器按混合内容拦截
-const WS_BASE = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+const WS_BASE = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${PREFIX}`;
 // WS 令牌走 Sec-WebSocket-Protocol 子协议(base64url),不进 URL,避免泄漏到日志/历史
 const wsProto = () => {
   const t = authToken();
@@ -58,7 +61,7 @@ const wsProto = () => {
   return ['ccw.token.' + b64];
 };
 async function api(path, body) {
-  const res = await fetch(path, {
+  const res = await fetch(PREFIX + path, {
     method: body ? 'POST' : 'GET',
     headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() },
     body: body ? JSON.stringify(body) : undefined,
@@ -1067,7 +1070,7 @@ $('#btn-notify').onclick = async () => {
 };
 setInterval(() => { if (state.view !== 'workspace') render(); }, 30_000);
 // 若服务端开启 token 认证,先校验令牌再建立连接(WS 被拒时只会静默断开,无法提示)
-fetch('/api/health', { headers: authHeaders() }).then((r) => {
+fetch(PREFIX + '/api/health', { headers: authHeaders() }).then((r) => {
   if (r.status === 401) promptToken();
   else { connectEvents(); render(); }
 }).catch(() => { connectEvents(); render(); });
