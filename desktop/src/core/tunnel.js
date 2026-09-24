@@ -12,6 +12,9 @@ const PROBE_GRACE = 3; // 连续失败此数后才判 server-down,容忍启动�
 // 子进程活过这个时长才算"这次启动成功了",退避才归零。秒退一律累计,
 // 否则只要有任何东西在本地端口上应答,探活就会把退避一直摁回第一档。
 const MIN_UPTIME_MS = 5000;
+// 连续这么多次秒退就停止自动重连,进入终态 gave-up(按退避约 3 分钟)。服务器下线/
+// 地址失效时无限重试只会刷屏和耗电,改由用户在界面上点「重试」或停用/删除这台。
+export const MAX_ATTEMPTS = 10;
 
 export class Tunnel {
   constructor({ server, localPort, spawn, probe, onState, delayFn = nextDelay,
@@ -30,7 +33,8 @@ export class Tunnel {
     this._gen = 0; // 子进程世代号:探活结果只对发起它的那一代子进程有效,跨重连的过期结果直接丢弃
   }
 
-  start() { this._stopped = false; this._launch(); }
+  // 也用作手动重试:从 gave-up / auth-failed 等终态重新开始,退避从第一档算起
+  start() { this._stopped = false; this._attempt = 0; this._launch(); }
 
   // 返回 kill 的结果(适配层给的是 Promise),退出应用前要 await 它:
   // 进程一旦消失,来不及杀掉的 ssh 会被系统收养并继续占着本地端口。
@@ -74,6 +78,10 @@ export class Tunnel {
 
     // 活得够久才算启动成功,退避归零
     if (this._now() - this._startedAt >= MIN_UPTIME_MS) this._attempt = 0;
+    if (this._attempt >= MAX_ATTEMPTS) {
+      this._set('gave-up', this._stderrTail.trim() || `连续 ${MAX_ATTEMPTS} 次连接失败`);
+      return;
+    }
     const delay = this._delayFn(this._attempt++);
     this._set('retrying', `${delay}ms 后重连`);
     this._timer = this._setTimer(() => this._launch(), delay);

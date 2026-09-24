@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Tunnel } from '../src/core/tunnel.js';
+import { Tunnel, MAX_ATTEMPTS } from '../src/core/tunnel.js';
 
 function makeTimers() {
   const q = [];
@@ -225,4 +225,25 @@ test('子进程活得够久再退出:退避归零,当作一次成功的连接', 
   const afterLongRun = states.filter((s) => s[0] === 'retrying').pop()[1];
   const ms = (d) => Number(String(d).match(/^(\d+)/)[1]);
   assert.equal(ms(afterLongRun), ms(firstDelay), '长时间在线后退避应回到第一档');
+});
+
+test('连续秒退达到上限 → gave-up,不再安排重连;start() 手动重试从头开始', async () => {
+  const { t, timers, sp } = makeTunnel({ probeResults: [] });
+  t.start();
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    sp.child().emitExit(255);
+    assert.equal(t.state, 'retrying');
+    await timers.fire(); // 重连(探活定时器随子进程退出被取消)
+  }
+  sp.child().emitStderr('ssh: connect to host old.example port 22: Connection timed out');
+  sp.child().emitExit(255);
+  assert.equal(t.state, 'gave-up');
+  assert.equal(timers.pending(), 0, '停止重试后不应再有定时器');
+  const spawned = sp.calls.length;
+
+  t.start();
+  assert.equal(t.state, 'connecting');
+  assert.equal(sp.calls.length, spawned + 1);
+  sp.child().emitExit(255);
+  assert.equal(t.state, 'retrying', '手动重试后退避计数应归零');
 });

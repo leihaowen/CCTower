@@ -62,7 +62,7 @@ export async function startApp() {
   const taken = new Set();
   for (const server of runtime.servers.filter((s) => s.enabled)) await startTunnel(server, taken);
   await refreshTray();
-  mainWin = initMainWindow(runtime, { onServersChanged: restartServers });
+  mainWin = initMainWindow(runtime, { onServersChanged: restartServers, onRetry: retryServer });
   await wireWindowHide();
 
   // 点通知 → 唤起主窗口并切到出事的那台服务器
@@ -113,7 +113,11 @@ async function startTunnel(server, taken) {
   runtime.localPorts.set(server.id, port);
   const tunnel = new Tunnel({
     server, localPort: port, spawn: tauriSpawn(), probe: httpProbe,
-    onState: (state, detail) => onTunnelState(server, state, detail),
+    // 只认当前登记的那条隧道:被停用/删除/重建的旧隧道,ssh 退出时还会报一次 idle,
+    // 放进来会把状态与告警计时写回去,停用 60 秒后还弹一条"未连接"
+    onState: (state, detail) => {
+      if (runtime.tunnels.get(server.id) === tunnel) onTunnelState(server, state, detail);
+    },
     // ssh 报 bind 冲突时换端口。runtime.localPorts 必须跟着改:WS 连接与 iframe
     // 都按它取端口,不同步的话隧道通了但页面还指着旧端口。
     onPortConflict: (busy) => {
@@ -166,7 +170,9 @@ async function restartServers() {
   for (const [id, prev] of prevById) {
     if (!prev.enabled) continue;
     const cur = nextById.get(id);
-    const changed = cur && cur.enabled && (cur.sshAlias !== prev.sshAlias || cur.remotePort !== prev.remotePort);
+    // token 也算:ws 连接建立时带着它,不重建的话改了令牌也不生效
+    const changed = cur && cur.enabled && (cur.sshAlias !== prev.sshAlias
+      || cur.remotePort !== prev.remotePort || cur.token !== prev.token);
     if (!cur || !cur.enabled || changed) stopServerRuntime(id);
   }
 
@@ -177,6 +183,15 @@ async function restartServers() {
 
   runtime.servers = next;
   await refreshTray();
+}
+
+// 侧栏「重试」:隧道停在 gave-up/auth-failed 终态后不会自己再连,由用户手动拉起。
+// 只对终态生效——隧道还活着时再 start() 会多起一个 ssh 子进程。
+function retryServer(id) {
+  const tunnel = runtime.tunnels.get(id);
+  if (!tunnel || !['gave-up', 'auth-failed', 'idle'].includes(tunnel.state)) return;
+  forgetServer(runtime.alerts, id); // 这一轮若再失败,要能重新告警
+  tunnel.start();
 }
 
 // 窗口关闭按钮改为隐藏而非退出:交互全靠托盘/通知唤起,退出走托盘菜单的"退出 CCTower"
