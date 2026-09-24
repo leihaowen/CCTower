@@ -4,8 +4,8 @@
 # 用法(本机):
 #   bash deploy/install.sh [选项]
 #
-# 用法(远程,脚本走 stdin,仓库由脚本自己 clone):
-#   ssh nimo@192.168.1.143 'bash -s -- --host 127.0.0.1' < deploy/install.sh
+# 用法(远程,仓库由脚本自己 clone;先传过去再跑,别用 `bash -s <` 走 stdin,会被子进程吞掉):
+#   scp deploy/install.sh user@192.0.2.10:/tmp/ && ssh user@192.0.2.10 'bash /tmp/install.sh --host 127.0.0.1'
 #
 # 选项:
 #   --dir PATH            安装目录            (默认 ~/ccw)

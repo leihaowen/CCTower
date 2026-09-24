@@ -15,10 +15,10 @@
 
 ## 最快路径:一条命令部署到另一台机器
 
-在**已经有这个仓库**的机器上执行(目标机需已配好免密 SSH):
+在**已经有这个仓库**的机器上执行(目标机需已配好免密 SSH;下面的 `user@192.0.2.10` 换成你的服务器):
 
 ```bash
-deploy/remote-install.sh nimo@192.168.1.143
+deploy/remote-install.sh user@192.0.2.10
 ```
 
 默认部署 `origin/main`、装到目标机的 `~/ccw`、监听 `127.0.0.1:7080`(最安全,配 SSH 隧道访问)。
@@ -26,8 +26,8 @@ deploy/remote-install.sh nimo@192.168.1.143
 想让它在局域网里直接用浏览器访问:
 
 ```bash
-deploy/remote-install.sh nimo@192.168.1.143 \
-  --host 0.0.0.0 --gen-token --allowed-hosts 192.168.1.143:7080
+deploy/remote-install.sh user@192.0.2.10 \
+  --host 0.0.0.0 --gen-token --allowed-hosts 192.0.2.10:7080
 ```
 
 三个参数缺一不可 —— 少了令牌服务端会拒绝启动,少了 `--allowed-hosts` 浏览器会吃 403。

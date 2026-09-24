@@ -7,9 +7,9 @@
 #   deploy/remote-install.sh <ssh目标> [--ref REF] [install.sh 的选项...]
 #
 # 例:
-#   deploy/remote-install.sh nimo@192.168.1.143
-#   deploy/remote-install.sh nimo@192.168.1.143 --ref origin/main --port 7080
-#   deploy/remote-install.sh myserver --host 0.0.0.0 --gen-token --allowed-hosts 192.168.1.143:7080
+#   deploy/remote-install.sh user@192.0.2.10
+#   deploy/remote-install.sh user@192.0.2.10 --ref origin/main --port 7080
+#   deploy/remote-install.sh myserver --host 0.0.0.0 --gen-token --allowed-hosts 192.0.2.10:7080
 #
 # 选项:
 #   --ref REF     要部署的本地 ref(默认 origin/main;没有 origin/main 时回退 HEAD)
