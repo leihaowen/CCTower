@@ -384,10 +384,13 @@ function render() {
   popover.hidden = true;
   // 画布持有 xterm / 监听器,离开视图必须显式拆掉
   if (state.view !== 'canvas' && window.CCCanvas && CCCanvas.isActive()) CCCanvas.dispose();
+  const focus = CCRequests.captureFocus();
+  CCRequests.prune();
   if (state.view === 'inbox') renderInbox();
   else if (state.view === 'sessions') renderSessions();
   else if (state.view === 'canvas') renderCanvas();
   else if (state.view === 'workspace') renderWorkspace();
+  CCRequests.restoreFocus(focus);
 }
 
 function renderCanvas() {
@@ -410,6 +413,11 @@ function lampClass(s) {
   return 'lamp-off';
 }
 
+// 没有 hook 挂起请求(升级前启动的会话)时,才显示按键式的批准/拒绝兜底
+function legacyPerm(s) {
+  return s.status === 'needs_permission' && s.alive && !(s.pendingRequests || []).some((r) => r.kind === 'permission');
+}
+
 function cardHTML(s) {
   const st = STATUS[s.status];
   const d = s.brief?.decision;
@@ -429,7 +437,8 @@ function cardHTML(s) {
       <div class="opts">${(d.options || []).map((o) =>
         `<button class="opt-btn ${o === d.recommended ? 'rec' : ''}" data-answer="${esc(o)}">${esc(o)}</button>`).join('')}</div>
     </div>` : ''}
-    ${s.status === 'needs_permission' && s.alive ? `<div class="card-decision">
+    ${CCRequests.html(s, { compact: true })}
+    ${legacyPerm(s) ? `<div class="card-decision">
       <div class="opts">
         <button class="opt-btn perm-btn" data-perm="allow" title="向权限对话框发送选项 1(允许)">✓ 批准</button>
         <button class="opt-btn perm-btn deny" data-perm="deny" title="向权限对话框发送 Esc(拒绝)">✗ 拒绝</button>
@@ -511,6 +520,7 @@ function wireCards(sel = '.card') {
         openDiff(el.dataset.id);
         return;
       }
+      if (e.target.closest('.req')) return; // hook 请求的作答由 requests.js 处理
       const btn = e.target.closest('.opt-btn');
       if (btn) {
         e.stopPropagation();
@@ -884,7 +894,8 @@ function updatePanels(s) {
       ${d.reason ? `<div class="why">推荐 ${esc(d.recommended || '')}:${esc(d.reason)}</div>` : ''}
       <div class="opts">${(d.options || []).map((o) => `<button class="opt-btn ${o === d.recommended ? 'rec' : ''}" data-answer="${esc(o)}">${esc(o)}</button>`).join('')}</div>
     </div>` : ''}
-    ${s.status === 'needs_permission' && s.alive ? `<div class="decision-box perm">
+    ${CCRequests.html(s)}
+    ${legacyPerm(s) ? `<div class="decision-box perm">
       <div class="q">${esc(s.statusLine)}</div>
       <div class="opts">
         <button class="opt-btn perm-btn" data-perm="allow" title="向权限对话框发送选项 1(允许)">✓ 批准</button>
@@ -907,7 +918,7 @@ function updatePanels(s) {
     </dl>`)}
     ${pane('note', '手工备注', `<div class="note-box"><textarea id="ws-note" rows="2" placeholder="给这个 session 写一句备注">${esc(s.note)}</textarea></div>`)}`;
 
-  leftBody.querySelectorAll('.opt-btn').forEach((b) => {
+  leftBody.querySelectorAll('.opt-btn:not(.req .opt-btn)').forEach((b) => {
     b.onclick = () => (b.dataset.perm ? sendPermission(s.id, b.dataset.perm === 'allow') : sendDecision(s.id, b.dataset.answer));
   });
   const reply = $('#ws-reply'), send = () => {

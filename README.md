@@ -53,7 +53,7 @@ npm start          # http://127.0.0.1:7080
 - 多标签只有一个输入控制者,其余只读可接管;心跳清除僵尸连接,控制权自动移交
 
 **状态采集(不解析屏幕文字)**
-1. 确定性信号:进程/退出码 + Claude Code 官方 hooks(Notification / Stop / UserPromptSubmit …)
+1. 确定性信号:进程/退出码 + Claude Code 官方 hooks(PermissionRequest / Notification / Stop / UserPromptSubmit …)
 2. Agent 上报:内置本地 MCP 工具 `report_status`(预授权,不弹权限),curl 仅兜底
 3. AI 归纳:headless `claude -p` 按需生成结构化 Brief,永不覆盖新鲜的 Agent 上报
 
@@ -61,7 +61,10 @@ npm start          # http://127.0.0.1:7080
 - 需要权限 > 需要决策 > 阻塞 > 完成待审,四组置顶;其余后台推进
 - 每张卡片是一个迷你终端:真实屏幕缩影(ANSI 彩色、TUI 边框已清洗)+ 状态灯
   (绿色跑马灯=运行,黄闪=需要你,蓝=就绪,红=意外,绿常亮=待审)
-- 决策选项卡片上直接点;权限请求卡片上直接批准/拒绝;答案写回原会话并记入决策时间线
+- 决策选项卡片上直接点;答案写回原会话并记入决策时间线
+- 权限请求 / Claude 的提问(AskUserQuestion)/ 计划审批经官方 `PermissionRequest` hook 送到网页:
+  批准、本会话总是允许、带理由拒绝、单选多选加自由输入作答;与终端对话框并存,谁先答算谁的,
+  终端答过的卡片自动撤下
 - 通知:页面 toast + 桌面通知 + **飞书群机器人推送**(同一原因去重,回应后解除)
 
 **Diff 审阅与一键合并**
@@ -110,7 +113,7 @@ webhook(默认关闭)。
 ## 测试
 
 ```bash
-npm test    # node:test,44 个用例(状态机 / resume / MCP 协议 / gitReview / 暴露面校验)
+npm test    # node:test,77 个用例(状态机 / resume / MCP 协议 / hook 审批 / gitReview / 暴露面校验)
 ```
 
 ## License

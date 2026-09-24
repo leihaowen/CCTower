@@ -103,7 +103,7 @@ const manager = new SessionManager({
 
 function publicSession(s) {
   const { events, ...rest } = s;
-  return { ...rest, events: events.slice(-60) };
+  return { ...rest, events: events.slice(-60), pendingRequests: manager.pendingRequests(s.id) };
 }
 
 // ---------- REST API ----------
@@ -153,6 +153,7 @@ app.post('/api/sessions/:id/action', (req, res) => {
     redraw: () => manager.redraw(id),
     'approve-permission': () => manager.permissionAction(id, true),
     'deny-permission': () => manager.permissionAction(id, false),
+    'resolve-request': () => manager.resolveRequest(id, value || {}),
     finish: () => manager.finish(id),
     'flag-brief': () => manager.flagBrief(id),
     note: () => manager.setNote(id, value),
@@ -171,6 +172,11 @@ app.post('/api/sessions/:id/action', (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
+});
+
+// PermissionRequest(http hook):挂起到网页作答或终端已处理,见 server/permissionBroker.js
+app.post('/api/hook/:id/PermissionRequest', (req, res) => {
+  manager.openPermissionRequest(req.params.id, req.body || {}, res);
 });
 
 // Claude Code hooks 回调(本机 hook 通过 curl 调用)
