@@ -16,6 +16,19 @@ function writeHookSettings(dir, base, sessionId, token) {
   for (const ev of events) {
     hooks[ev] = [{ hooks: [{ type: 'command', command: hookCommand(base, sessionId, ev, token) }] }];
   }
+  // 权限请求/AskUserQuestion/ExitPlanMode:http hook 挂起等网页作答(server/permissionBroker.js)。
+  // 与 TUI 对话框并行,谁先答算谁的;服务不可达时 CLI 视为无决定,终端照常可答。
+  hooks.PermissionRequest = [{
+    matcher: '*',
+    hooks: [{
+      type: 'http',
+      url: `${base}/api/hook/${sessionId}/PermissionRequest`,
+      timeout: 600,
+      ...(token ? { headers: { 'X-CCW-Token': token } } : {}),
+    }],
+  }];
+  // 工具执行完:用来识别"权限已在终端批准",撤掉网页上的挂起卡片。async 不拖慢工具
+  hooks.PostToolUse = [{ hooks: [{ type: 'command', async: true, command: hookCommand(base, sessionId, 'PostToolUse', token) }] }];
   const settings = {
     hooks,
     permissions: { allow: ['mcp__cctower__report_status'] },

@@ -7,6 +7,7 @@ const { execFileSync, execFile } = require('child_process');
 const pty = require('node-pty');
 const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 const { writeHookSettings, writeMcpConfig, protocolPrompt } = require('./claudeSetup');
+const { PermissionBroker } = require('./permissionBroker');
 const { computeDiff, squashMerge } = require('./gitReview');
 
 // 解析用户填写的附加参数:空格分隔,支持单/双引号包裹带空格的值
@@ -61,6 +62,11 @@ class SessionManager {
     this.sessions = new Map(); // id -> session (persisted shape)
     this.runtime = new Map(); // id -> { pty, buffer, clients:Set<ws>, controller:ws|null }
     this._merging = new Set(); // projectDir 级合并互斥
+    // PermissionRequest hook 的挂起请求(纯内存:服务重启后 hook 连接断开,终端对话框照常可答)
+    this.permissions = new PermissionBroker({
+      onChange: (sid) => { const s = this.sessions.get(sid); if (s) this.onChange(s); },
+      onRelease: (req, reason) => this._onRequestReleased(req, reason),
+    });
     fs.mkdirSync(path.join(dataDir, 'worktrees'), { recursive: true });
     fs.mkdirSync(path.join(dataDir, 'hooks'), { recursive: true, mode: 0o700 });
     this.stateFile = path.join(dataDir, 'sessions.json');
@@ -143,6 +149,7 @@ class SessionManager {
   // 注意:不结束任何 tmux 会话——它们要在服务重启后被重新接管。
   dispose() {
     clearInterval(this._staleTimer);
+    this.permissions.dispose();
     if (this._saveT) { clearTimeout(this._saveT); this._saveT = null; }
     try { this._writeState(); } catch (e) { console.error(`[CCTower] 退出前保存失败:${e.message}`); }
   }
@@ -454,6 +461,7 @@ class SessionManager {
       }
       s.alive = false;
       s.exitCode = code;
+      this.permissions.release(s.id, null, 'exit');
       for (const ws of rt.clients) {
         if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'exit', code }));
       }
@@ -599,6 +607,12 @@ class SessionManager {
     const s = this.sessions.get(id);
     const rt = this.runtime.get(id);
     if (!s || !rt || !s.alive || s.type !== 'claude') return false;
+    // 有 hook 挂起的权限请求:按官方协议回写,不再依赖 TUI 布局
+    const hooked = this.permissions.list(id).find((r) => r.kind === 'permission');
+    if (hooked) {
+      this.resolveRequest(id, { requestId: hooked.id, behavior: approve ? 'allow' : 'deny' });
+      return true;
+    }
     const question = s.statusLine;
     try { rt.pty.write(approve ? '1' : '\x1b'); } catch { return false; }
     s.decisions.push({
@@ -612,6 +626,75 @@ class SessionManager {
     return true;
   }
 
+  // ---------- PermissionRequest hook ----------
+
+  pendingRequests(id) { return this.permissions.publicList(id); }
+
+  // hook 以 http 调用进来:挂起等网页作答。会话不存在时立即回空响应(= 无决定,交还终端)
+  openPermissionRequest(id, payload, res) {
+    const s = this.sessions.get(id);
+    if (!s || s.type !== 'claude') { res.end(); return null; }
+    if (payload && payload.session_id && s.claudeSessionId !== payload.session_id) s.claudeSessionId = payload.session_id;
+    s.lastSemanticAt = new Date().toISOString();
+    const req = this.permissions.open(id, payload || {}, res);
+    this._event(s, 'hook', `PermissionRequest:${req.toolName} ${req.summary}`);
+    this._applyPendingStatus(s);
+    return req;
+  }
+
+  // 网页作答:{requestId, behavior:'allow'|'deny', answers?, message?, always?}
+  resolveRequest(id, opts = {}) {
+    const s = this.sessions.get(id);
+    const req = this.permissions.get(opts.requestId);
+    if (!s || !req || req.sessionId !== id) throw new Error('请求不存在或已被处理');
+    this.permissions.resolve(req.id, opts); // 校验失败在此抛错,请求保留
+    const answer = opts.behavior === 'deny'
+      ? `拒绝${opts.message ? ':' + opts.message : ''}`
+      : req.kind === 'question'
+        ? Object.values(opts.answers || {}).map((a) => (Array.isArray(a) ? a.join(', ') : a)).join(' / ')
+        : opts.always ? '批准(本会话总是允许)' : '批准';
+    s.decisions.push({ at: new Date().toISOString(), kind: req.kind, question: this._requestTitle(req), answer, delivered: true });
+    s.lastSemanticAt = new Date().toISOString();
+    s.lastNotified = null;
+    if (req.kind === 'question' && s.brief && s.brief.decision) s.brief.decision = null;
+    this._event(s, 'input', `用户从网页处理了${this._requestTitle(req)}:${answer}`, '用户操作');
+    if (!this._applyPendingStatus(s)) {
+      this._setStatus(s, 'executing', opts.behavior === 'deny' ? '已拒绝,等待 Claude 调整方案' : '已处理,继续执行', '用户操作');
+    }
+    return { ok: true };
+  }
+
+  _requestTitle(req) {
+    if (req.kind === 'question') return `问题「${req.summary}」`;
+    if (req.kind === 'plan') return '计划审批';
+    return `权限请求 ${req.toolName}: ${req.summary}`;
+  }
+
+  // 有挂起请求时按最早的一条设置状态;返回是否设置了
+  _applyPendingStatus(s) {
+    const [first] = this.permissions.list(s.id);
+    if (!first) return false;
+    if (first.kind === 'permission') this._setStatus(s, 'needs_permission', `请求权限:${first.toolName} · ${first.summary}`);
+    else if (first.kind === 'question') this._setStatus(s, 'needs_decision', `需要你回答:${first.summary}`);
+    else this._setStatus(s, 'needs_decision', '计划待批准');
+    return true;
+  }
+
+  // 非网页作答的收尾(终端已答 / 回合结束 / 超时 / 连接断开)
+  _onRequestReleased(req, reason) {
+    const s = this.sessions.get(req.sessionId);
+    if (!s || reason === 'dispose') return;
+    if (reason === 'timeout') {
+      this._event(s, 'warning', `${this._requestTitle(req)} 网页等待超时,请在终端中处理`);
+    } else if (reason === 'disconnect') {
+      this._event(s, 'hook', `${this._requestTitle(req)} 的 hook 连接已断开`);
+    } else if (reason === 'exit') {
+      this._event(s, 'lifecycle', `进程退出,${this._requestTitle(req)} 已作废`);
+    } else {
+      s.decisions.push({ at: new Date().toISOString(), kind: req.kind, question: this._requestTitle(req), answer: '在终端中处理', delivered: true });
+    }
+  }
+
   // ---------- claude signals ----------
 
   applyHook(id, event, payload) {
@@ -623,11 +706,22 @@ class SessionManager {
       s.claudeSessionId = payload.session_id;
     }
     s.lastSemanticAt = new Date().toISOString();
+    if (event === 'PostToolUse') {
+      // 每次工具调用都会来,不进事件时间线;只用来识别"权限已在终端批准"
+      const released = this.permissions.release(id, { toolName: payload.tool_name, input: payload.tool_input });
+      if (released.length && !this._applyPendingStatus(s)) this._setStatus(s, 'executing', '已在终端处理,继续执行');
+      else this._save();
+      return;
+    }
     this._event(s, 'hook', `${event}${msg ? ':' + msg : ''}`);
+    // 回合结束/新指令/会话结束:挂起的请求必然已在终端处理(或作废)
+    if (['Stop', 'UserPromptSubmit', 'SessionEnd'].includes(event)) this.permissions.release(id);
     switch (event) {
       case 'Notification': {
         const low = msg.toLowerCase();
-        if (low.includes('permission') || msg.includes('权限')) {
+        if (this.permissions.list(id).length) {
+          // PermissionRequest 已给出更具体的状态行,约 6 秒后到的提醒不再覆盖
+        } else if (low.includes('permission') || msg.includes('权限')) {
           this._setStatus(s, 'needs_permission', msg || 'Claude 请求批准一项敏感操作');
         } else if (low.includes('waiting') || msg.includes('等待')) {
           const q = s.brief && s.brief.decision && s.brief.decision.question;
