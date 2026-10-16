@@ -778,6 +778,7 @@
     const next = new Set(ids);
     for (const [id, p] of CV.els) p.root.classList.toggle('sel', next.has(id));
     CV.sel = [...next];
+    if (ids.length) window.CCWorkspaceTools?.select(ids[0]);
     // 停靠列表同步高亮:只改 class,不重建(重建会打断正在进行的滚动)
     if (CV.dom && CV.dom.dockList) {
       CV.dom.dockList.querySelectorAll('.cv-dock-it').forEach((el) => {

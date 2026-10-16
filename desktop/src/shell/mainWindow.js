@@ -1,6 +1,8 @@
 // 主窗口:侧栏渲染 + iframe 懒创建切换。数据从 app.js 的 runtime 读,
 // 变化通过 'ccw:changed' CustomEvent 通知(app.js 在 refreshTray 时一并派发)。
 // 本文件只做 DOM 渲染与事件接线,业务判断(校验、隧道编排)留在 core/ 与 app.js。
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { saveServers, loadServers } from './store.js';
 import { normalizeServer, sshStartArgs } from '../core/servers.js';
 import { attentionCount } from '../core/watcher.js';
@@ -25,6 +27,24 @@ export function initMainWindow(runtime, { onServersChanged, onRetry }) {
   let pendingDelete = null;   // 点过一次「删除」、等待确认的那台
   let pendingTimer = null;
 
+  // Only the currently displayed, configured tunnel frame may use the bridge.
+  window.addEventListener('message', async (event) => {
+    const frame = frames.get(activeId);
+    if (!frame || event.source !== frame.contentWindow || event.origin !== new URL(frame.src).origin) return;
+    if (event.data?.type !== 'ccw:clipboard-read' || typeof event.data.requestId !== 'string') return;
+    const origin = event.origin, source = event.source;
+    try {
+      const text = await invoke('read_mac_clipboard');
+      source.postMessage({ type: 'ccw:clipboard-result', requestId: event.data.requestId, text }, origin);
+    } catch {
+      source.postMessage({ type: 'ccw:clipboard-result', requestId: event.data.requestId, text: null }, origin);
+    }
+  });
+  listen('ccw:download', ({ payload }) => {
+    const frame = frames.get(activeId);
+    if (frame) frame.contentWindow.postMessage({ type: 'ccw:download-result', ...payload }, new URL(frame.src).origin);
+  });
+
   // showServer:内容区用 iframe 直连隧道本地端口,懒创建、切换时只切 display。
   // 退路(Mac 上 WKWebView 若拒绝加载 http iframe/混合内容时启用):改为每台服务器一个
   // WebviewWindow(new WebviewWindow(id, { url: `http://127.0.0.1:${port}` })),
@@ -34,6 +54,8 @@ export function initMainWindow(runtime, { onServersChanged, onRetry }) {
     activeId = id;
     if (!frames.has(id)) {
       const f = document.createElement('iframe');
+      f.allow = 'clipboard-read; clipboard-write';
+      f.addEventListener('load', () => f.contentWindow.postMessage({ type: 'ccw:desktop-ready' }, new URL(f.src).origin));
       f.src = `http://127.0.0.1:${runtime.localPorts.get(id)}/`;
       content.appendChild(f);
       frames.set(id, f);

@@ -17,6 +17,8 @@
         "width": 1280,
         "height": 800,
         "visible": false,
+        "create": false,
+        "dragDropEnabled": false,
         "theme": "Dark",
         "backgroundColor": "#1b1b1d"
       }

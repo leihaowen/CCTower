@@ -697,6 +697,7 @@ document.addEventListener('mouseup', () => {
 function openSession(id) {
   state.view = 'workspace';
   state.currentId = id;
+  window.CCWorkspaceTools?.select(id);
   render();
 }
 function closeWorkspace(backTo = 'inbox') {
@@ -716,7 +717,7 @@ function renderWorkspace() {
   const s = state.sessions.get(state.currentId);
   if (!s) { closeWorkspace(); return; }
   const existing = $('#term-host');
-  if (existing && term) { updatePanels(s); return; } // 增量更新,不动终端
+  if (existing && term && existing.dataset.session === s.id) { updatePanels(s); return; } // 增量更新,不动终端
 
   disposeTerm();
   main.className = 'ws-mode';
@@ -747,7 +748,7 @@ function renderWorkspace() {
       <div class="ws-gut l" id="ws-gut-l"></div>
       <div class="ws-term">
         <div class="readonly-bar" id="ro-bar" hidden>只读观察中<button id="ro-take">接管控制</button></div>
-        <div id="term-host"></div>
+        <div id="term-host" data-session="${esc(s.id)}"></div>
       </div>
       <div class="ws-gut r" id="ws-gut-r"></div>
       <div class="ws-col right" id="ws-right">
@@ -866,6 +867,7 @@ function renderWorkspace() {
   termRO = new ResizeObserver(() => fit && fit.fit());
   termRO.observe($('#term-host'));
 
+  window.CCWorkspaceTools?.mountExplorer($('#ws-left'), s);
   updatePanels(s);
 }
 

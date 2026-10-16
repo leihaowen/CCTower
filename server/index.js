@@ -51,7 +51,7 @@ function authOk(req) {
 }
 app.use('/api', (req, res, next) => {
   if (!isLocalRequest(req.headers)) return res.status(403).json({ error: 'forbidden' });
-  if (!authOk(req)) return res.status(401).json({ error: 'unauthorized' });
+  if (!authOk(req) && !workTools.authorizeDownload(req)) return res.status(401).json({ error: 'unauthorized' });
   next();
 });
 
@@ -100,6 +100,9 @@ const manager = new SessionManager({
     }
   },
 });
+
+const workTools = require('./workspaceTools').workspaceTools(manager);
+workTools.mount(app);
 
 function publicSession(s) {
   const { events, ...rest } = s;
