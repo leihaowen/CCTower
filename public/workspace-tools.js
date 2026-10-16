@@ -32,7 +32,6 @@ window.CCWorkspaceTools = (() => {
   function select(id) { if (id) selectedId = id; }
   function hide() {
     generation++;
-    if (current) current.draft = command.value;
     drawer.hidden = true; document.body.classList.remove('quick-open');
   }
   drawer.querySelector('#quick-hide').onclick = hide;
@@ -70,7 +69,6 @@ window.CCWorkspaceTools = (() => {
     const seq = ++generation;
     // Initiate clipboard read during the click/key gesture, before any network await.
     const clip = text !== undefined ? Promise.resolve(text) : clipboardText();
-    if (current) current.draft = command.value;
     current = null;
     for (const item of terminals.values()) item.host.hidden = true;
     drawer.querySelector('button[type=submit]').disabled = true;
@@ -84,7 +82,7 @@ window.CCWorkspaceTools = (() => {
         const host = document.createElement('div'); host.className = 'quick-host'; drawer.querySelector('#quick-hosts').append(host);
         const term = new Terminal({ fontSize: 13, scrollback: 5000, theme: { background: '#0e1013', foreground: '#d6dae2' }, macOptionClickForcesSelection: true });
         const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(host);
-        t = { id: info.id, host, term, fit, draft: '', controller: false, exited: false };
+        t = { id: info.id, host, term, fit, controller: false, exited: false };
         terminals.set(info.id, t);
         term.onData((data) => { if (t.controller) send(t, { type: 'input', data }); });
         term.onResize(({ cols, rows }) => { if (t.controller) send(t, { type: 'resize', cols, rows }); });
@@ -96,13 +94,15 @@ window.CCWorkspaceTools = (() => {
       current = t;
       for (const item of terminals.values()) item.host.hidden = item !== t;
       drawer.querySelector('#quick-directory').textContent = `${source.name} · ${info.cwd}（保留 shell 当前目录）`;
-      command.value = t.draft; command.disabled = false; command.focus(); t.fit.fit(); reflect(t);
-      const before = command.value, clipboard = await clip;
+      t.fit.fit(); reflect(t);
+      const clipboard = await clip;
       if (seq !== generation || current !== t) return;
-      if (text !== undefined || (!before && command.value === before)) {
-        if (clipboard !== null) command.value = clipboard;
-      }
-      if (clipboard === null) command.placeholder = '剪贴板未授权，请按 Cmd+V / Ctrl+V 粘贴，Enter 发送';
+      command.value = clipboard ?? '';
+      command.placeholder = clipboard === null
+        ? '剪贴板未授权，请按 Cmd+V / Ctrl+V 粘贴，Enter 发送'
+        : '粘贴命令，Enter 发送，Shift+Enter 换行';
+      command.disabled = false;
+      command.focus();
     } catch (e) { if (seq === generation) { status.textContent = e.message; command.disabled = true; } }
   }
   drawer.querySelector('#quick-control').onclick = () => current && send(current, { type: 'take-control' });
@@ -111,23 +111,110 @@ window.CCWorkspaceTools = (() => {
     if (!current?.controller || current.exited || !command.value.trim()) return;
     // Control sequences are not commands; the staged editor never forwards raw escapes.
     const text = command.value.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
-    if (send(current, { type: 'input', data: text + '\r' })) { current.draft = ''; command.value = ''; current.term.focus(); }
+    if (send(current, { type: 'input', data: text + '\r' })) { command.value = ''; current.term.focus(); }
   };
   command.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); drawer.querySelector('form').requestSubmit(); } };
-  command.oninput = () => { if (current) current.draft = command.value; };
   document.addEventListener('keydown', (e) => {
+    if (explorerDialog.open) return;
     if ((e.ctrlKey || e.metaKey) && e.code === 'Backquote') { e.preventDefault(); e.stopImmediatePropagation(); drawer.hidden ? open() : hide(); }
     else if (e.key === 'Escape' && !drawer.hidden) { e.preventDefault(); e.stopImmediatePropagation(); hide(); }
   }, true);
   document.querySelector('#quick-toggle').onclick = () => drawer.hidden ? open() : hide();
 
+  const explorerDialog = document.createElement('dialog');
+  explorerDialog.className = 'explorer-dialog';
+  document.body.append(explorerDialog);
+  let expanded = null;
+  function collapseExplorer() {
+    if (!expanded) return;
+    const { model, parent } = expanded;
+    model.el.classList.remove('expanded');
+    model.el.querySelector('.files-expand').textContent = '展开';
+    model.el.querySelector('.files-expand').setAttribute('aria-expanded', 'false');
+    if (parent.isConnected) parent.querySelector('.col-head').after(model.el);
+    else model.el.remove();
+    expanded = null;
+    if (explorerDialog.open) explorerDialog.close();
+  }
+  explorerDialog.addEventListener('cancel', (e) => { e.preventDefault(); collapseExplorer(); });
+  explorerDialog.addEventListener('close', () => { if (!explorerDialog.open) collapseExplorer(); });
+  // Native dialog resize remains available, with a visible pointer/keyboard handle too.
+  function resizeExplorer(model) {
+    const handle = model.el.querySelector('.files-resize');
+    const apply = (w, h) => {
+      if (expanded?.model === model) {
+        explorerDialog.style.width = Math.min(window.innerWidth - 24, Math.max(320, w)) + 'px';
+        explorerDialog.style.height = Math.min(window.innerHeight - 24, Math.max(260, h)) + 'px';
+      } else {
+        layout.wsLeftW = clampW('wsLeftW', w); applyLayoutVars();
+        const height = Math.max(200, Math.min(h, model.el.parentElement.clientHeight - 42));
+        model.el.style.setProperty('--explorer-height', height + 'px');
+      }
+    };
+    const save = () => {
+      if (!expanded) {
+        saveLayout();
+        try { localStorage.setItem('ccw.explorer.height', model.el.style.getPropertyValue('--explorer-height')); } catch {}
+      }
+    };
+    handle.onpointerdown = (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault(); handle.setPointerCapture(e.pointerId);
+      const target = expanded?.model === model ? explorerDialog : model.el;
+      const rect = target.getBoundingClientRect(), x = e.clientX, y = e.clientY;
+      const width = expanded ? rect.width : layout.wsLeftW;
+      const move = (event) => apply(width + event.clientX - x, rect.height + event.clientY - y);
+      const up = () => {
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up); handle.removeEventListener('pointercancel', up);
+        if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
+        save();
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up); handle.addEventListener('pointercancel', up);
+    };
+    handle.onkeydown = (e) => {
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+      e.preventDefault();
+      const rect = (expanded?.model === model ? explorerDialog : model.el).getBoundingClientRect();
+      apply(rect.width + (e.key === 'ArrowRight' ? 24 : e.key === 'ArrowLeft' ? -24 : 0),
+        rect.height + (e.key === 'ArrowDown' ? 24 : e.key === 'ArrowUp' ? -24 : 0));
+      save();
+    };
+  }
+  function fileIcon(file) {
+    const name = file.name.toLowerCase(), ext = name.split('.').pop();
+    let kind = 'file', shape = '<path d="M5 2h8l4 4v14H5zM13 2v5h4"/>';
+    if (file.directory) { kind = 'folder'; shape = '<path d="M2 5h7l2 3h11v12H2z"/>'; }
+    else if (/^(png|jpe?g|gif|svg|webp|ico|avif)$/.test(ext)) { kind = 'image'; shape = '<rect x="3" y="3" width="18" height="18"/><circle cx="8" cy="8" r="1.5"/><path d="m3 18 6-6 4 4 3-5 5 7"/>'; }
+    else if (ext === 'md' || ext === 'mdx') { kind = 'markdown'; shape = '<rect x="2" y="5" width="20" height="14"/><path d="M5 15V9l3 3 3-3v6m5-6v6m-2-2 2 2 2-2"/>'; }
+    else if (/^(sh|bash|zsh|fish)$/.test(ext)) { kind = 'shell'; shape = '<path d="m4 6 6 6-6 6m9 0h7"/>'; }
+    else if (/^(pem|key|crt|cer)$/.test(ext)) { kind = 'key'; shape = '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4m-4 4v3"/>'; }
+    else if (name === '.env' || name.startsWith('.env.') || /^(json|ya?ml|toml|ini|conf)$/.test(ext)) { kind = 'config'; shape = '<path d="M4 7h16M4 17h16M8 4v6m8 4v6"/>'; }
+    else if (/^(html?|css|scss|js|jsx|ts|tsx|py|go|rs|java|vue|svelte)$/.test(ext)) { kind = 'code'; shape = '<path d="m8 5-6 7 6 7m8-14 6 7-6 7m-3-16-2 18"/>'; }
+    return `<span class="file-chevron" aria-hidden="true">${file.directory ? '›' : ''}</span><svg class="file-icon icon-${kind}" data-kind="${kind}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shape}</svg>`;
+  }
+
   function mountExplorer(parent, session) {
+    collapseExplorer();
     select(session.id);
     let model = explorers.get(session.id);
     if (!model) {
       const el = document.createElement('section'); el.className = 'file-explorer';
-      el.innerHTML = `<header><b>资源管理器</b><button class="btn-ghost files-refresh" title="刷新文件列表">⟳</button><button class="btn-ghost files-upload">上传</button><input type="file" multiple hidden></header><div class="files-nav"><button class="btn-ghost files-up">↑</button><span class="files-path"></span></div><div class="files-message" role="status"></div><div class="files-list"></div><div class="files-drop">拖入文件上传到当前目录</div><div class="files-download-drop">将列表文件拖到这里，下载到本机</div>`;
-      model = { el, path: '.', seq: 0, busy: false, urls: new Map() }; explorers.set(session.id, model);
+      el.innerHTML = `<header><b>资源管理器</b><button class="btn-ghost files-expand" aria-expanded="false" title="展开资源管理器">展开</button><button class="btn-ghost files-refresh" title="刷新文件列表">⟳</button><button class="btn-ghost files-upload">上传</button><input type="file" multiple hidden></header><div class="files-nav"><button class="btn-ghost files-up">↑</button><span class="files-path"></span></div><input class="files-filter" type="search" placeholder="筛选当前目录的文件名…" aria-label="筛选当前目录的文件名"><div class="files-count"></div><div class="files-message" role="status"></div><div class="files-list"></div><div class="files-drop">拖入文件上传到当前目录</div><div class="files-download-drop">将列表文件拖到这里，下载到本机</div><button class="files-resize" title="拖动调整宽度和高度；也可用方向键调整" aria-label="调整资源管理器尺寸">拖动调整大小 ⤡</button>`;
+      model = { el, path: '.', seq: 0, busy: false, files: [], urls: new Map() }; explorers.set(session.id, model);
+      try { const height = localStorage.getItem('ccw.explorer.height'); if (/^\d+(\.\d+)?px$/.test(height || '')) el.style.setProperty('--explorer-height', height); } catch {}
+      resizeExplorer(model);
+      el.querySelector('.files-expand').onclick = () => {
+        if (expanded?.model === model) { collapseExplorer(); return; }
+        collapseExplorer();
+        expanded = { model, parent: el.parentElement };
+        el.classList.add('expanded');
+        el.querySelector('.files-expand').textContent = '收起';
+        el.querySelector('.files-expand').setAttribute('aria-expanded', 'true');
+        explorerDialog.append(el); explorerDialog.showModal();
+        el.querySelector('.files-filter').focus();
+      };
       const message = (text) => { el.querySelector('.files-message').textContent = text; };
       const join = (name) => model.path === '.' ? name : `${model.path}/${name}`;
       async function ticket(file) {
@@ -138,36 +225,48 @@ window.CCWorkspaceTools = (() => {
         try { const a = document.createElement('a'); a.href = await ticket(file); a.download = file.split('/').pop(); document.body.append(a); a.click(); a.remove(); message('下载已开始'); }
         catch (e) { message(e.message); }
       }
+      function drawFiles() {
+        const query = el.querySelector('.files-filter').value.trim().toLocaleLowerCase();
+        const files = (model.files || []).filter((file) => file.name.toLocaleLowerCase().includes(query));
+        el.querySelector('.files-count').textContent = query ? `${files.length} / ${model.files.length} 项` : `${files.length} 项`;
+        const list = el.querySelector('.files-list'); list.replaceChildren();
+        for (const file of files) {
+          const row = document.createElement('div'); row.className = 'file-row';
+          const name = document.createElement('button'); name.className = 'file-name';
+          name.innerHTML = fileIcon(file); name.title = file.name;
+          const label = document.createElement('span'); label.className = 'file-label';
+          label.textContent = file.name; name.append(label);
+          row.append(name); list.append(row);
+          const filePath = join(file.name);
+          if (file.directory) name.onclick = () => refresh(filePath);
+          else {
+            name.onclick = () => download(filePath);
+            const btn = document.createElement('button'); btn.className = 'file-download'; btn.textContent = '↓'; btn.title = `下载 ${file.name} (${file.size} 字节)`; btn.onclick = () => download(filePath); row.append(btn);
+            row.draggable = true;
+            row.onpointerdown = () => { ticket(filePath).catch(() => {}); };
+            row.ondragstart = (e) => {
+              e.dataTransfer.setData('application/x-ccw-file', JSON.stringify({ id: session.id, path: filePath }));
+              const cached = model.urls.get(filePath);
+              if (cached && Date.now() - cached.at < 100000) e.dataTransfer.setData('DownloadURL', `application/octet-stream:${file.name}:${cached.url}`);
+              e.dataTransfer.effectAllowed = 'copy';
+            };
+          }
+        }
+        if (!files.length) list.textContent = model.files.length ? '没有匹配的文件' : '目录为空';
+      }
+      el.querySelector('.files-filter').oninput = drawFiles;
       async function refresh(dir = model.path) {
         const seq = ++model.seq;
         try {
           const r = await api(`/api/sessions/${session.id}/files?path=${encodeURIComponent(dir)}`);
           if (seq !== model.seq) return;
+          if (model.path !== r.path) el.querySelector('.files-filter').value = '';
           model.path = r.path; model.parent = r.parent;
           el.querySelector('.files-path').textContent = r.path === '.' ? r.root : r.path;
           el.querySelector('.files-path').title = r.root + '/' + r.path;
           el.querySelector('.files-up').disabled = !r.parent;
-          const list = el.querySelector('.files-list'); list.replaceChildren();
-          for (const file of r.files) {
-            const row = document.createElement('div'); row.className = 'file-row';
-            const name = document.createElement('button'); name.className = 'file-name'; name.textContent = `${file.directory ? '▸' : '·'} ${file.name}`; name.title = file.name;
-            row.append(name); list.append(row);
-            const filePath = join(file.name);
-            if (file.directory) name.onclick = () => refresh(filePath);
-            else {
-              name.onclick = () => download(filePath);
-              const btn = document.createElement('button'); btn.className = 'file-download'; btn.textContent = '↓'; btn.title = `下载 ${file.name} (${file.size} 字节)`; btn.onclick = () => download(filePath); row.append(btn);
-              row.draggable = true;
-              row.onpointerdown = () => { ticket(filePath).catch(() => {}); };
-              row.ondragstart = (e) => {
-                e.dataTransfer.setData('application/x-ccw-file', JSON.stringify({ id: session.id, path: filePath }));
-                const cached = model.urls.get(filePath);
-                if (cached && Date.now() - cached.at < 100000) e.dataTransfer.setData('DownloadURL', `application/octet-stream:${file.name}:${cached.url}`);
-                e.dataTransfer.effectAllowed = 'copy';
-              };
-            }
-          }
-          if (!r.files.length) list.textContent = '目录为空';
+          model.files = r.files;
+          drawFiles();
         } catch (e) { if (seq === model.seq) message(e.message); }
       }
       async function upload(files) {
@@ -188,8 +287,8 @@ window.CCWorkspaceTools = (() => {
       }
       el.querySelector('.files-refresh').onclick = () => refresh();
       el.querySelector('.files-up').onclick = () => model.parent && refresh(model.parent);
-      el.querySelector('.files-upload').onclick = () => el.querySelector('input').click();
-      el.querySelector('input').onchange = (e) => { upload([...e.target.files]); e.target.value = ''; };
+      el.querySelector('.files-upload').onclick = () => el.querySelector('input[type=file]').click();
+      el.querySelector('input[type=file]').onchange = (e) => { upload([...e.target.files]); e.target.value = ''; };
       el.ondragover = (e) => { e.preventDefault(); el.classList.add('drag-over'); };
       el.ondragleave = (e) => { if (!el.contains(e.relatedTarget)) el.classList.remove('drag-over'); };
       el.ondrop = (e) => {
