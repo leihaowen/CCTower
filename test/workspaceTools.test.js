@@ -45,6 +45,21 @@ test('file transfer: binary roundtrip, authentication, path confinement, no over
   assert.deepEqual(Buffer.from(await download.arrayBuffer()), bytes);
   assert.equal((await fetch(base + '/files?' + ticket.url.split('?')[1])).status, 401);
   assert.equal((await fetch(`http://127.0.0.1:${server.address().port}${ticket.url.replace('/source/', '/other/')}`)).status, 401);
+  await t.test('downloads dotfiles and files inside hidden directories after authorization', async () => {
+    await fs.mkdir(path.join(root, '.config'));
+    for (const file of ['.env', '.config/settings.json']) {
+      const fixture = 'synthetic download fixture\n';
+      await fs.writeFile(path.join(root, file), fixture);
+      const result = await request('/files/ticket', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: file }) });
+      assert.equal(result.status, 200);
+      const { url } = await result.json();
+      const response = await fetch(`http://127.0.0.1:${server.address().port}${url}`);
+      assert.equal(response.status, 200, file);
+      assert.match(response.headers.get('content-disposition'), /attachment/);
+      assert.equal(await response.text(), fixture);
+      assert.equal((await fetch(base + '/files/download')).status, 401);
+    }
+  });
   const quick = () => request('/quick-terminal', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   assert.equal((await (await quick()).json()).cwd, root);
   await quick(); assert.equal(creates, 1);

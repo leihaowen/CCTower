@@ -72,7 +72,20 @@ function workspaceTools(manager) {
       const { real } = await resolve(t.id, t.file);
       if (!(await fsp.stat(real)).isFile()) throw error('只能下载普通文件');
       res.set('Cache-Control', 'no-store');
-      res.download(real, path.basename(real));
+      // This endpoint has already checked the session root and download ticket.
+      // Express otherwise returns 404 for .env and paths inside hidden directories.
+      await new Promise((done, reject) => {
+        res.download(real, path.basename(real), { dotfiles: 'allow' }, (err) => {
+          if (!err) { done(); return; }
+          // Never log the ticket, full URL, or file contents.
+          console.warn('[CCTower download]', JSON.stringify({
+            sessionId: t.id, name: path.basename(real),
+            status: err.status || 500, code: err.code || err.name,
+          }));
+          if (res.headersSent && !res.writableEnded) res.destroy();
+          reject(err);
+        });
+      });
     }));
     app.post('/api/sessions/:id/quick-terminal', route(async (req, res) => {
       const source = manager.get(req.params.id);
